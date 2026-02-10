@@ -1,0 +1,39 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap');
+
+/* Satoshi Variable font - using Inter as fallback */
+@font-face {
+  font-family: 'Satoshi Variable:Regular';
+  src: local('Inter'), local('Inter Regular');
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: 'Satoshi Variable:Medium';
+  src: local('Inter'), local('Inter Medium');
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: 'Satoshi Variable:Bold';
+  src: local('Inter'), local('Inter Bold');
+  font-weight: 700;
+}
+
+@font-face {
+  font-family: 'Satoshi Variable:Black';
+  src: local('Inter'), local('Inter Black');
+  font-weight: 900;
+}
+
+/* Aeonik Extended TRIAL - using Inter as fallback */
+@font-face {
+  font-family: 'Aeonik_Extended_TRIAL:Medium';
+  src: local('Inter'), local('Inter Medium');
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: 'Aeonik_Extended_TRIAL:Bold';
+  src: local('Inter'), local('Inter Bold');
+  font-weight: 700;
+}
