@@ -119,12 +119,21 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
 
   const inputPath = req.file.path;
   const startTime = Date.now();
+  console.log('[process-pointcloud] Received file:', inputPath);
+  console.log('[process-pointcloud] Output dir:', outputsDir);
 
   try {
     const { stdout, stderr } = await runPython(inputPath);
+    if (stdout) {
+      console.log('[process-pointcloud] Python stdout:\n' + stdout);
+    }
+    if (stderr) {
+      console.warn('[process-pointcloud] Python stderr:\n' + stderr);
+    }
     const outputPath = await findLatestOutput(inputPath, startTime);
 
     if (!outputPath) {
+      console.warn('[process-pointcloud] No output PLY found for input:', inputPath);
       res.status(500).json({
         success: false,
         error: 'No output PLY file found after processing',
@@ -132,6 +141,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       });
       return;
     }
+    console.log('[process-pointcloud] Using output file:', outputPath);
 
     const outputBuffer = await fs.readFile(outputPath);
     const outputBase64 = outputBuffer.toString('base64');
@@ -145,6 +155,13 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     });
   } catch (err) {
     const errorMessage = err?.error?.message || err?.message || 'Python processing failed';
+    if (err?.stdout) {
+      console.log('[process-pointcloud] Python stdout (error):\n' + err.stdout);
+    }
+    if (err?.stderr) {
+      console.warn('[process-pointcloud] Python stderr (error):\n' + err.stderr);
+    }
+    console.error('[process-pointcloud] Python failed:', errorMessage);
     res.status(500).json({
       success: false,
       error: errorMessage,

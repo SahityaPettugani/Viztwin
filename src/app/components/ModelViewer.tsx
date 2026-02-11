@@ -133,6 +133,24 @@ function ThreeScene({
             const scale = 5 / maxDim;
             geometry.scale(scale, scale, scale);
           }
+
+          const colorAttr = geometry.getAttribute('color');
+          if (colorAttr) {
+            const colorArray = colorAttr.array as ArrayLike<number>;
+            let maxValue = 0;
+            const step = Math.max(1, Math.floor(colorArray.length / 3000));
+            for (let i = 0; i < colorArray.length; i += step) {
+              const value = colorArray[i] as number;
+              if (value > maxValue) maxValue = value;
+            }
+
+            if (maxValue > 1.0) {
+              for (let i = 0; i < colorArray.length; i += 1) {
+                colorArray[i] = (colorArray[i] as number) / 255;
+              }
+              colorAttr.needsUpdate = true;
+            }
+          }
           
           // Create point cloud material
           const material = new THREE.PointsMaterial({
@@ -359,6 +377,17 @@ export default function ModelViewer({
     ]
   });
 
+  const pointCloudLegend = [
+    { name: 'Ceiling', color: '#1f77b4' },
+    { name: 'Floor', color: '#aec7e8' },
+    { name: 'Wall', color: '#ff7f0e' },
+    { name: 'Beam', color: '#ffbb78' },
+    { name: 'Column', color: '#2ca02c' },
+    { name: 'Window', color: '#98df8a' },
+    { name: 'Door', color: '#d62728' },
+    { name: 'Unknown', color: '#ff9896' },
+  ];
+
   const toggleFilter = (categoryName: string, itemName: string) => {
     setFilters(prev => prev.map(category => {
       if (category.name === categoryName) {
@@ -426,6 +455,24 @@ export default function ModelViewer({
               {projectTitle}
             </h1>
           </div>
+
+          {pointCloudUrl && (
+            <div className="absolute top-[1.04vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
+              <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
+                Point Cloud Legend
+              </p>
+              <div className="grid grid-cols-2 gap-x-[1.04vw] gap-y-[0.42vw]">
+                {pointCloudLegend.map((item) => (
+                  <div key={item.name} className="flex items-center gap-[0.42vw]">
+                    <span className="inline-block size-[0.68vw] rounded-full border border-[#cccccc]" style={{ backgroundColor: item.color }} />
+                    <span className="font-['Satoshi_Variable:Medium',sans-serif] text-[0.73vw] text-[#000001]">
+                      {item.name}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Zoom Controls */}
           <div className="absolute bottom-[1.56vw] right-[1.56vw] flex flex-col gap-[0.52vw] z-10">
