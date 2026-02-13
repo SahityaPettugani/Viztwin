@@ -204,6 +204,14 @@ def color_label(labels, num_classes=8):
     return colors.reshape((*labels.shape, 3))
 
 
+def print_class_color_map(num_classes=8):
+    cmap = plt.get_cmap("tab20", num_classes)
+    for class_id in range(num_classes):
+        color = cmap(class_id % num_classes)[:3]
+        name = ID_TO_NAME.get(class_id, f"class_{class_id}")
+        print(f"{class_id}: {name} -> RGB({color[0]:.3f}, {color[1]:.3f}, {color[2]:.3f})")
+
+
 def run_bimnet_inference(pcd, models, cube_edge=128, num_classes=8, device="cuda"):
     points = np.asarray(pcd.points)
     print(f"Loaded {points.shape[0]} points")
@@ -264,6 +272,8 @@ def main(args):
     models = build_models(args.checkpoint, device, num_classes=args.num_classes)
 
     print("\nRunning BIMNet inference...")
+    print("\nClass color map (tab20):")
+    print_class_color_map(num_classes=args.num_classes)
     pcd, _preds_volume, _points_grid, point_labels = run_bimnet_inference(
         pcd, models, cube_edge=args.cube_edge, num_classes=args.num_classes, device=device
     )

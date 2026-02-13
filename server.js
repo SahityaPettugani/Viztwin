@@ -58,27 +58,13 @@ const findLatestOutput = async (inputPath, startTime) => {
   return null;
 };
 
-const runPython = (inputPath) => {
+const runPython = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
     const pythonExec = process.env.PYTHON_EXEC || 'python';
-    const scriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'process_pointcloud.py');
-    const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\scan2bim\\val_best.pth';
 
-    const args = [
-      scriptPath,
-      '--input_file',
-      inputPath,
-      '--output_dir',
-      outputsDir,
-      '--checkpoint',
-      checkpointPath
-    ];
+    const fullArgs = [scriptPath, ...args];
 
-    if (process.env.PYTHON_CPU === '1') {
-      args.push('--cpu');
-    }
-
-    const child = spawn(pythonExec, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(pythonExec, fullArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let stdout = '';
     let stderr = '';
@@ -106,6 +92,7 @@ const runPython = (inputPath) => {
 };
 
 app.use(cors());
+app.use('/outputs', express.static(outputsDir));
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'Backend server is running', port: PORT });
@@ -123,34 +110,75 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
   console.log('[process-pointcloud] Output dir:', outputsDir);
 
   try {
-    const { stdout, stderr } = await runPython(inputPath);
+    const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\val_best_50.pth';
+    const instancedScriptPath = process.env.PYTHON_SCRIPT || 'C:\\Users\\iamsa\\Downloads\\scan2bim\\viz_inst.py';
+    const semanticScriptPath = process.env.PYTHON_SEMANTIC_SCRIPT || path.join(__dirname, 'semantic_runner.py');
+
+    const commonArgs = [
+      '--input_file',
+      inputPath,
+      '--output_dir',
+      outputsDir,
+      '--checkpoint',
+      checkpointPath
+    ];
+
+    if (process.env.PYTHON_CPU === '1') {
+      commonArgs.push('--cpu');
+    }
+
+    const semanticResult = await runPython(semanticScriptPath, commonArgs);
+    if (semanticResult.stdout) {
+      console.log('[process-pointcloud] Semantic stdout:\n' + semanticResult.stdout);
+    }
+    if (semanticResult.stderr) {
+      console.warn('[process-pointcloud] Semantic stderr:\n' + semanticResult.stderr);
+    }
+
+    const instancedResult = await runPython(instancedScriptPath, commonArgs);
+    if (instancedResult.stdout) {
+      console.log('[process-pointcloud] Instanced stdout:\n' + instancedResult.stdout);
+    }
+    if (instancedResult.stderr) {
+      console.warn('[process-pointcloud] Instanced stderr:\n' + instancedResult.stderr);
+    }
+
+    const { stdout, stderr } = instancedResult;
     if (stdout) {
       console.log('[process-pointcloud] Python stdout:\n' + stdout);
     }
     if (stderr) {
       console.warn('[process-pointcloud] Python stderr:\n' + stderr);
     }
-    const outputPath = await findLatestOutput(inputPath, startTime);
+    const semanticPath = path.join(outputsDir, `${path.parse(inputPath).name}_semantic.ply`);
+    const instancedPath = path.join(outputsDir, 'all_instances_combined.ply');
 
-    if (!outputPath) {
-      console.warn('[process-pointcloud] No output PLY found for input:', inputPath);
+    const semanticUrl = `/outputs/${path.relative(outputsDir, semanticPath).split(path.sep).join('/')}`;
+    const instancedUrl = `/outputs/${path.relative(outputsDir, instancedPath).split(path.sep).join('/')}`;
+
+    const semanticExists = await fs.stat(semanticPath).then(() => true).catch(() => false);
+    const instancedExists = await fs.stat(instancedPath).then(() => true).catch(() => false);
+
+    if (!semanticExists || !instancedExists) {
+      console.warn('[process-pointcloud] Missing output file(s) for input:', inputPath);
       res.status(500).json({
         success: false,
-        error: 'No output PLY file found after processing',
+        error: 'Missing output PLY file(s) after processing',
         pythonOutput: stdout || stderr
       });
       return;
     }
-    console.log('[process-pointcloud] Using output file:', outputPath);
-
-    const outputBuffer = await fs.readFile(outputPath);
-    const outputBase64 = outputBuffer.toString('base64');
+    console.log('[process-pointcloud] Semantic output:', semanticPath);
+    console.log('[process-pointcloud] Instanced output:', instancedPath);
 
     res.json({
       success: true,
       message: 'Point cloud processed successfully',
-      output: outputBase64,
-      outputFile: outputPath,
+      outputUrl: instancedUrl,
+      semanticUrl,
+      instancedUrl,
+      semanticFile: semanticPath,
+      outputFile: instancedPath,
       pythonOutput: stdout
     });
   } catch (err) {
