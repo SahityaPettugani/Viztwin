@@ -146,6 +146,12 @@ def save_instances(instances_dict, output_dir: Path):
     return combined_filename
 
 
+def maybe_downsample(pcd, voxel_size):
+    if voxel_size <= 0:
+        return pcd
+    return pcd.voxel_down_sample(voxel_size=voxel_size)
+
+
 def finetune_model(checkpoint_path, device, num_new_classes):
     state_old = torch.load(checkpoint_path, map_location=device)
     model_new = BIMNet(num_classes=num_new_classes)
@@ -304,6 +310,9 @@ def main(args):
     all_instances = filter_small_instances(all_instances, cleaning_thresholds)
 
     print("Saving instances...")
+    if args.voxel_size > 0:
+        for class_name, instances in all_instances.items():
+            all_instances[class_name] = [maybe_downsample(pcd, args.voxel_size) for pcd in instances]
     save_instances(all_instances, output_dir)
     return 0
 
@@ -315,6 +324,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", action="append", default=[], help="Path(s) to BIMNet checkpoint(s)")
     parser.add_argument("--cube_edge", type=int, default=96, help="Voxel grid edge length")
     parser.add_argument("--num_classes", type=int, default=8, help="Number of BIMNet output classes")
+    parser.add_argument("--voxel_size", type=float, default=0.02, help="Downsample voxel size (0 to disable)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU")
 
     args = parser.parse_args()

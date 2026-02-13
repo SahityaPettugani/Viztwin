@@ -85,6 +85,12 @@ def run_bimnet_inference(pcd, model, cube_edge=96, num_classes=8, device="cuda")
     return pcd
 
 
+def maybe_downsample(pcd, voxel_size):
+    if voxel_size <= 0:
+        return pcd
+    return pcd.voxel_down_sample(voxel_size=voxel_size)
+
+
 def main(args):
     device = "cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu")
     input_path = Path(args.input_file)
@@ -102,6 +108,8 @@ def main(args):
         device=device,
     )
 
+    pcd = maybe_downsample(pcd, args.voxel_size)
+
     output_path = output_dir / f"{input_path.stem}_semantic.ply"
     o3d.io.write_point_cloud(str(output_path), pcd)
     print(f"Semantic point cloud saved to {output_path}")
@@ -115,6 +123,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", required=True, help="Path to BIMNet checkpoint")
     parser.add_argument("--cube_edge", type=int, default=96, help="Voxel grid edge length")
     parser.add_argument("--num_classes", type=int, default=8, help="Number of BIMNet output classes")
+    parser.add_argument("--voxel_size", type=float, default=0.02, help="Downsample voxel size (0 to disable)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU")
 
     args = parser.parse_args()
