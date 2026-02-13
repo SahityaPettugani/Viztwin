@@ -91,7 +91,7 @@ const runPython = (scriptPath, args) => {
   });
 };
 
-const runPythonDetached = (scriptPath, args) => {
+const runPythonDetached = (scriptPath, args, onDone) => {
   const pythonExec = process.env.PYTHON_EXEC || 'python';
   const fullArgs = [scriptPath, ...args];
   const child = spawn(pythonExec, fullArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -109,6 +109,9 @@ const runPythonDetached = (scriptPath, args) => {
       console.log('[process-pointcloud] Instanced processing complete');
     } else {
       console.warn('[process-pointcloud] Instanced processing failed with code:', code);
+    }
+    if (onDone) {
+      onDone();
     }
   });
 };
@@ -143,7 +146,9 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       '--output_dir',
       outputsDir,
       '--checkpoint',
-      checkpointPath
+      checkpointPath,
+      '--voxel_size',
+      process.env.PLY_VOXEL_SIZE || '0.02'
     ];
 
     if (process.env.PYTHON_CPU === '1') {
@@ -161,7 +166,14 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     }
 
     console.log('[process-pointcloud] Starting instanced processing in background');
-    runPythonDetached(instancedScriptPath, commonArgs);
+    runPythonDetached(instancedScriptPath, commonArgs, async () => {
+      try {
+        await fs.unlink(inputPath);
+        console.log('[process-pointcloud] Cleaned up input file:', inputPath);
+      } catch {
+        // Ignore cleanup failures.
+      }
+    });
     const semanticPath = path.join(outputsDir, `${path.parse(inputPath).name}_semantic.ply`);
     const instancedPath = path.join(outputsDir, 'all_instances_combined.ply');
 
@@ -212,11 +224,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       pythonOutput: err?.stderr || ''
     });
   } finally {
-    try {
-      await fs.unlink(inputPath);
-    } catch {
-      // Ignore cleanup failures.
-    }
+    // Cleanup happens after background instanced processing completes.
   }
 });
 
