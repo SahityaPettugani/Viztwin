@@ -241,7 +241,7 @@ export default function DesktopProjectLibrary({
             onClick={() => handleProjectClick(project.image || img59L6StudyRoomBasePicture1, project.title, {
               raw: project.pointCloudRawUrl,
               semantic: project.pointCloudSemanticUrl,
-              instanced: project.pointCloudInstancedUrl || project.pointCloudUrl
+              instanced: project.pointCloudInstancedUrl
             })}
           />
         );

@@ -20,6 +20,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://localhost:3001',
+      '/outputs': 'http://localhost:3001',
     },
   },
 
