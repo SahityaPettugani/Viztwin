@@ -378,14 +378,14 @@ export default function ModelViewer({
   });
 
   const pointCloudLegend = [
-    { name: 'Ceiling', color: '#1f77b4' },
-    { name: 'Floor', color: '#aec7e8' },
-    { name: 'Wall', color: '#ff7f0e' },
-    { name: 'Beam', color: '#ffbb78' },
-    { name: 'Column', color: '#2ca02c' },
-    { name: 'Window', color: '#98df8a' },
-    { name: 'Door', color: '#d62728' },
-    { name: 'Unknown', color: '#ff9896' },
+    { name: 'Ceiling', color: 'rgb(31, 119, 180)' },
+    { name: 'Floor', color: 'rgb(174, 199, 232)' },
+    { name: 'Wall', color: 'rgb(255, 127, 14)' },
+    { name: 'Beam', color: 'rgb(255, 187, 120)' },
+    { name: 'Column', color: 'rgb(44, 160, 44)' },
+    { name: 'Window', color: 'rgb(152, 223, 138)' },
+    { name: 'Door', color: 'rgb(214, 39, 40)' },
+    { name: 'Unknown', color: 'rgb(255, 152, 150)' },
   ];
 
   const toggleFilter = (categoryName: string, itemName: string) => {
@@ -459,7 +459,10 @@ export default function ModelViewer({
           {pointCloudUrl && (
             <div className="absolute top-[1.04vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
-                Point Cloud Legend
+                Semantic Class Colors
+              </p>
+              <p className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.68vw] text-[#666666] mb-[0.52vw]">
+                Instance colors may vary per object
               </p>
               <div className="grid grid-cols-2 gap-x-[1.04vw] gap-y-[0.42vw]">
                 {pointCloudLegend.map((item) => (

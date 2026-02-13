@@ -22,7 +22,9 @@ interface Project {
   title: string;
   date: string;
   image: string;
-  pointCloudUrl?: string;
+  pointCloudRawUrl?: string;
+  pointCloudSemanticUrl?: string;
+  pointCloudInstancedUrl?: string;
   pointCloudFile?: File;
 }
 
@@ -126,13 +128,22 @@ export default function App() {
 
         console.log('Process response status:', processResponse.status);
 
-        let processedUrl = originalUrl;
+        let semanticUrl: string | undefined;
+        let instancedUrl: string | undefined;
 
         if (processResponse.ok) {
           const processResult = await processResponse.json();
           console.log('Process result:', processResult);
-          if (processResult.output) {
-            processedUrl = base64ToBlobUrl(processResult.output);
+          if (processResult.semanticUrl) {
+            semanticUrl = processResult.semanticUrl;
+          } else if (processResult.semanticOutput) {
+            semanticUrl = base64ToBlobUrl(processResult.semanticOutput);
+          }
+
+          if (processResult.instancedUrl || processResult.outputUrl) {
+            instancedUrl = processResult.instancedUrl || processResult.outputUrl;
+          } else if (processResult.output) {
+            instancedUrl = base64ToBlobUrl(processResult.output);
           }
         } else {
           const errorData = await processResponse.json().catch(() => ({}));
@@ -152,7 +163,9 @@ export default function App() {
             year: 'numeric'
           }),
           image: '',
-          pointCloudUrl: processedUrl,
+          pointCloudRawUrl: originalUrl,
+          pointCloudSemanticUrl: semanticUrl || originalUrl,
+          pointCloudInstancedUrl: instancedUrl || semanticUrl || originalUrl,
           pointCloudFile: undefined
         };
 

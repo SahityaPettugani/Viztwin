@@ -15,6 +15,9 @@ interface Project {
   title: string;
   date: string;
   image: string;
+  pointCloudRawUrl?: string;
+  pointCloudSemanticUrl?: string;
+  pointCloudInstancedUrl?: string;
   pointCloudUrl?: string;
 }
 
@@ -144,7 +147,11 @@ export default function DesktopProjectLibrary({
   projects?: Project[];
 }) {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
-  const [selectedPointCloud, setSelectedPointCloud] = useState<string | undefined>(undefined);
+  const [selectedPointCloud, setSelectedPointCloud] = useState<{
+    raw?: string;
+    semantic?: string;
+    instanced?: string;
+  } | undefined>(undefined);
   const [selectedTitle, setSelectedTitle] = useState<string>('');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
@@ -186,10 +193,18 @@ export default function DesktopProjectLibrary({
     };
   };
 
-  const handleProjectClick = (image: string, title: string, pointCloudUrl?: string) => {
+  const handleProjectClick = (
+    image: string,
+    title: string,
+    urls?: {
+      raw?: string;
+      semantic?: string;
+      instanced?: string;
+    }
+  ) => {
     setSelectedProject(image);
     setSelectedTitle(title);
-    setSelectedPointCloud(pointCloudUrl);
+    setSelectedPointCloud(urls);
   };
 
   return (
@@ -223,7 +238,11 @@ export default function DesktopProjectLibrary({
             date={project.date}
             left={position.left}
             top={position.top}
-            onClick={() => handleProjectClick(project.image || img59L6StudyRoomBasePicture1, project.title, project.pointCloudUrl)}
+            onClick={() => handleProjectClick(project.image || img59L6StudyRoomBasePicture1, project.title, {
+              raw: project.pointCloudRawUrl,
+              semantic: project.pointCloudSemanticUrl,
+              instanced: project.pointCloudInstancedUrl || project.pointCloudUrl
+            })}
           />
         );
       })}
@@ -302,7 +321,9 @@ export default function DesktopProjectLibrary({
           onNavigateHome={onNavigateHome}
           onNavigateGetStarted={onNavigateGetStarted}
           onNavigateLibrary={onNavigateLibrary}
-          pointCloudUrl={selectedPointCloud}
+          rawPointCloudUrl={selectedPointCloud?.raw}
+          semanticPointCloudUrl={selectedPointCloud?.semantic}
+          instancedPointCloudUrl={selectedPointCloud?.instanced}
         />
       )}
       
