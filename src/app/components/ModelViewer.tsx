@@ -10,7 +10,9 @@ interface ModelViewerProps {
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
   onNavigateLibrary: () => void;
-  pointCloudUrl?: string;
+  rawPointCloudUrl?: string;
+  semanticPointCloudUrl?: string;
+  instancedPointCloudUrl?: string;
 }
 
 interface FilterCategory {
@@ -339,9 +341,22 @@ export default function ModelViewer({
   onNavigateHome,
   onNavigateGetStarted,
   onNavigateLibrary,
-  pointCloudUrl
+  rawPointCloudUrl,
+  semanticPointCloudUrl,
+  instancedPointCloudUrl
 }: ModelViewerProps) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+
+  const [activeTab, setActiveTab] = useState<'raw' | 'semantic' | 'instanced'>('instanced');
+
+  const availableTabs = [
+    { key: 'raw' as const, label: 'Raw', url: rawPointCloudUrl },
+    { key: 'semantic' as const, label: 'Semantic', url: semanticPointCloudUrl },
+    { key: 'instanced' as const, label: 'Instantiated', url: instancedPointCloudUrl },
+  ].filter((tab) => Boolean(tab.url));
+
+  const resolvedTab = availableTabs.find((tab) => tab.key === activeTab) || availableTabs[0];
+  const activePointCloudUrl = resolvedTab?.url;
   
   const [filters, setFilters] = useState<FilterCategory[]>([
     {
@@ -456,7 +471,7 @@ export default function ModelViewer({
             </h1>
           </div>
 
-          {pointCloudUrl && (
+          {activePointCloudUrl && (
             <div className="absolute top-[1.04vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
                 Semantic Class Colors
@@ -490,9 +505,27 @@ export default function ModelViewer({
             </button>
           </div>
 
+          {availableTabs.length > 1 && (
+            <div className="absolute top-[3.2vw] left-[1.04vw] z-10 flex gap-[0.42vw] bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] p-[0.42vw] shadow-sm">
+              {availableTabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`px-[0.78vw] py-[0.42vw] rounded-[0.52vw] text-[0.78vw] font-['Satoshi_Variable:Medium',sans-serif] transition-colors ${
+                    resolvedTab?.key === tab.key
+                      ? 'bg-[#91f9d0] text-[#000001]'
+                      : 'bg-white text-[#333333] hover:bg-[#f5f5f5]'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Three.js Container */}
           <div ref={canvasContainerRef} className="w-full h-full">
-            <ThreeScene filters={filters} containerRef={canvasContainerRef} pointCloudUrl={pointCloudUrl} />
+            <ThreeScene filters={filters} containerRef={canvasContainerRef} pointCloudUrl={activePointCloudUrl} />
           </div>
         </div>
 

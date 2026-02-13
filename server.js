@@ -91,6 +91,28 @@ const runPython = (scriptPath, args) => {
   });
 };
 
+const runPythonDetached = (scriptPath, args) => {
+  const pythonExec = process.env.PYTHON_EXEC || 'python';
+  const fullArgs = [scriptPath, ...args];
+  const child = spawn(pythonExec, fullArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  child.stdout.on('data', (chunk) => {
+    console.log('[process-pointcloud] Instanced stdout:\n' + chunk.toString());
+  });
+
+  child.stderr.on('data', (chunk) => {
+    console.warn('[process-pointcloud] Instanced stderr:\n' + chunk.toString());
+  });
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      console.log('[process-pointcloud] Instanced processing complete');
+    } else {
+      console.warn('[process-pointcloud] Instanced processing failed with code:', code);
+    }
+  });
+};
+
 app.use(cors());
 app.use('/outputs', express.static(outputsDir));
 
@@ -108,10 +130,11 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
   const startTime = Date.now();
   console.log('[process-pointcloud] Received file:', inputPath);
   console.log('[process-pointcloud] Output dir:', outputsDir);
+  console.log('[process-pointcloud] Input size (bytes):', req.file.size);
 
   try {
     const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\val_best_50.pth';
-    const instancedScriptPath = process.env.PYTHON_SCRIPT || 'C:\\Users\\iamsa\\Downloads\\scan2bim\\viz_inst.py';
+    const instancedScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'viz_inst_runner.py');
     const semanticScriptPath = process.env.PYTHON_SEMANTIC_SCRIPT || path.join(__dirname, 'semantic_runner.py');
 
     const commonArgs = [
@@ -127,7 +150,9 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       commonArgs.push('--cpu');
     }
 
+    const semanticStart = Date.now();
     const semanticResult = await runPython(semanticScriptPath, commonArgs);
+    console.log('[process-pointcloud] Semantic duration (ms):', Date.now() - semanticStart);
     if (semanticResult.stdout) {
       console.log('[process-pointcloud] Semantic stdout:\n' + semanticResult.stdout);
     }
@@ -135,21 +160,8 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       console.warn('[process-pointcloud] Semantic stderr:\n' + semanticResult.stderr);
     }
 
-    const instancedResult = await runPython(instancedScriptPath, commonArgs);
-    if (instancedResult.stdout) {
-      console.log('[process-pointcloud] Instanced stdout:\n' + instancedResult.stdout);
-    }
-    if (instancedResult.stderr) {
-      console.warn('[process-pointcloud] Instanced stderr:\n' + instancedResult.stderr);
-    }
-
-    const { stdout, stderr } = instancedResult;
-    if (stdout) {
-      console.log('[process-pointcloud] Python stdout:\n' + stdout);
-    }
-    if (stderr) {
-      console.warn('[process-pointcloud] Python stderr:\n' + stderr);
-    }
+    console.log('[process-pointcloud] Starting instanced processing in background');
+    runPythonDetached(instancedScriptPath, commonArgs);
     const semanticPath = path.join(outputsDir, `${path.parse(inputPath).name}_semantic.ply`);
     const instancedPath = path.join(outputsDir, 'all_instances_combined.ply');
 
@@ -159,27 +171,30 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     const semanticExists = await fs.stat(semanticPath).then(() => true).catch(() => false);
     const instancedExists = await fs.stat(instancedPath).then(() => true).catch(() => false);
 
-    if (!semanticExists || !instancedExists) {
-      console.warn('[process-pointcloud] Missing output file(s) for input:', inputPath);
+    if (!semanticExists) {
+      console.warn('[process-pointcloud] Missing semantic output for input:', inputPath);
       res.status(500).json({
         success: false,
-        error: 'Missing output PLY file(s) after processing',
-        pythonOutput: stdout || stderr
+        error: 'Missing semantic output PLY after processing',
       });
       return;
     }
     console.log('[process-pointcloud] Semantic output:', semanticPath);
-    console.log('[process-pointcloud] Instanced output:', instancedPath);
+    if (instancedExists) {
+      console.log('[process-pointcloud] Instanced output:', instancedPath);
+    }
+    console.log('[process-pointcloud] Total request duration (ms):', Date.now() - startTime);
 
     res.json({
       success: true,
-      message: 'Point cloud processed successfully',
-      outputUrl: instancedUrl,
+      message: instancedExists
+        ? 'Point cloud processed successfully'
+        : 'Semantic output ready; instanced processing started',
+      outputUrl: instancedExists ? instancedUrl : undefined,
       semanticUrl,
-      instancedUrl,
+      instancedUrl: instancedExists ? instancedUrl : undefined,
       semanticFile: semanticPath,
-      outputFile: instancedPath,
-      pythonOutput: stdout
+      outputFile: instancedExists ? instancedPath : undefined
     });
   } catch (err) {
     const errorMessage = err?.error?.message || err?.message || 'Python processing failed';

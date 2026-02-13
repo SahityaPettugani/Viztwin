@@ -164,8 +164,8 @@ export default function App() {
           }),
           image: '',
           pointCloudRawUrl: originalUrl,
-          pointCloudSemanticUrl: semanticUrl || originalUrl,
-          pointCloudInstancedUrl: instancedUrl || semanticUrl || originalUrl,
+          pointCloudSemanticUrl: semanticUrl,
+          pointCloudInstancedUrl: instancedUrl,
           pointCloudFile: undefined
         };
 
