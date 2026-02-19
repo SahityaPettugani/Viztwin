@@ -136,7 +136,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
   console.log('[process-pointcloud] Input size (bytes):', req.file.size);
 
   try {
-    const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\val_best_50.pth';
+    const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\val_best_miou.pth';
     const instancedScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'viz_inst_runner.py');
     const semanticScriptPath = process.env.PYTHON_SEMANTIC_SCRIPT || path.join(__dirname, 'semantic_runner.py');
 
@@ -151,12 +151,16 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       process.env.PLY_VOXEL_SIZE || '0.02'
     ];
 
+    const instancedOutputName = `${path.parse(inputPath).name}_instanced.ply`;
+    const semanticArgs = [...commonArgs];
+    const instancedArgs = [...commonArgs, '--output_name', instancedOutputName];
+
     if (process.env.PYTHON_CPU === '1') {
       commonArgs.push('--cpu');
     }
 
     const semanticStart = Date.now();
-    const semanticResult = await runPython(semanticScriptPath, commonArgs);
+    const semanticResult = await runPython(semanticScriptPath, semanticArgs);
     console.log('[process-pointcloud] Semantic duration (ms):', Date.now() - semanticStart);
     if (semanticResult.stdout) {
       console.log('[process-pointcloud] Semantic stdout:\n' + semanticResult.stdout);
@@ -166,7 +170,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     }
 
     console.log('[process-pointcloud] Starting instanced processing in background');
-    runPythonDetached(instancedScriptPath, commonArgs, async () => {
+    runPythonDetached(instancedScriptPath, instancedArgs, async () => {
       try {
         await fs.unlink(inputPath);
         console.log('[process-pointcloud] Cleaned up input file:', inputPath);
@@ -175,7 +179,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       }
     });
     const semanticPath = path.join(outputsDir, `${path.parse(inputPath).name}_semantic.ply`);
-    const instancedPath = path.join(outputsDir, 'all_instances_combined.ply');
+    const instancedPath = path.join(outputsDir, instancedOutputName);
 
     const semanticUrl = `/outputs/${path.relative(outputsDir, semanticPath).split(path.sep).join('/')}`;
     const instancedUrl = `/outputs/${path.relative(outputsDir, instancedPath).split(path.sep).join('/')}`;
