@@ -126,7 +126,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     const vizInstScriptPath = process.env.PYTHON_SCRIPT || 'C:\\Users\\iamsa\\Downloads\\scan2bim\\viz_inst.py';
     const cloud2BimDir = process.env.CLOUD2BIM_DIR || 'C:\\Users\\iamsa\\Downloads\\Cloud2BIM-1.02\\Cloud2BIM-1.02';
     const json2IfcScriptPath = process.env.PYTHON_JSON2IFC_SCRIPT || path.join(cloud2BimDir, 'json2ifc.py');
-    const viewIfcScriptPath = process.env.PYTHON_VIEW_IFC_SCRIPT || path.join(cloud2BimDir, 'view_ifc.py');
+    const ifcObjExporterScriptPath = process.env.PYTHON_IFC_EXPORTER_SCRIPT || path.join(__dirname, 'ifc_obj_exporter.py');
     const safeStem = path.parse(inputPath).name.replace(/[^a-zA-Z0-9._-]/g, '_');
     const requestOutputDir = path.join(outputsDir, `${Date.now()}_${safeStem}`);
     await fs.mkdir(requestOutputDir, { recursive: true });
@@ -183,10 +183,12 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     const bimJsonPath = path.join(runDir, 'bim_reconstruction_data.json');
     const bimIfcPath = path.join(runDir, 'bim_model.ifc');
     const bimObjPath = path.join(runDir, 'bim_model.obj');
+    const bimPropsPath = path.join(runDir, 'bim_model_properties.json');
 
     const hasBimJson = await fs.stat(bimJsonPath).then(() => true).catch(() => false);
     let bimIfcUrl;
     let bimObjUrl;
+    let bimPropsUrl;
 
     if (hasBimJson) {
       try {
@@ -204,27 +206,33 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
           console.warn('[process-pointcloud] json2ifc.py stderr:\n' + ifcResult.stderr);
         }
 
-        const viewIfcArgs = [
+        const exportArgs = [
+          '--ifc_path',
           bimIfcPath,
           '--obj_path',
           bimObjPath,
-          '--no_show',
+          '--props_path',
+          bimPropsPath,
         ];
-        const viewIfcResult = await runPython(viewIfcScriptPath, viewIfcArgs, { cwd: cloud2BimDir });
-        if (viewIfcResult.stdout) {
-          console.log('[process-pointcloud] view_ifc.py stdout:\n' + viewIfcResult.stdout);
+        const exportResult = await runPython(ifcObjExporterScriptPath, exportArgs);
+        if (exportResult.stdout) {
+          console.log('[process-pointcloud] ifc_obj_exporter.py stdout:\n' + exportResult.stdout);
         }
-        if (viewIfcResult.stderr) {
-          console.warn('[process-pointcloud] view_ifc.py stderr:\n' + viewIfcResult.stderr);
+        if (exportResult.stderr) {
+          console.warn('[process-pointcloud] ifc_obj_exporter.py stderr:\n' + exportResult.stderr);
         }
 
         const hasIfc = await fs.stat(bimIfcPath).then(() => true).catch(() => false);
         const hasObj = await fs.stat(bimObjPath).then(() => true).catch(() => false);
+        const hasProps = await fs.stat(bimPropsPath).then(() => true).catch(() => false);
         if (hasIfc) {
           bimIfcUrl = `/outputs/${path.relative(outputsDir, bimIfcPath).split(path.sep).join('/')}`;
         }
         if (hasObj) {
           bimObjUrl = `/outputs/${path.relative(outputsDir, bimObjPath).split(path.sep).join('/')}`;
+        }
+        if (hasProps) {
+          bimPropsUrl = `/outputs/${path.relative(outputsDir, bimPropsPath).split(path.sep).join('/')}`;
         }
       } catch (bimError) {
         console.warn('[process-pointcloud] BIM conversion failed:', bimError?.message || bimError);
@@ -245,6 +253,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       instancedUrl,
       bimIfcUrl,
       bimObjUrl,
+      bimPropsUrl,
       outputFile: instancedPath,
       runOutputDir: runDir,
     });

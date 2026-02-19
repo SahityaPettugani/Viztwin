@@ -16,6 +16,7 @@ interface ModelViewerProps {
   instancedPointCloudUrl?: string;
   bimModelUrl?: string;
   bimIfcUrl?: string;
+  bimPropsUrl?: string;
 }
 
 interface FilterCategory {
@@ -25,9 +26,21 @@ interface FilterCategory {
 
 interface SelectedElement {
   type: string;
-  material: string;
+  elementId?: string;
+  material?: string;
   dimensions: string;
   properties: { label: string; value: string }[];
+}
+
+interface BimElementProps {
+  id: string;
+  className: string;
+  name: string;
+  dimensions: {
+    x: number;
+    y: number;
+    z: number;
+  };
 }
 
 interface LegendItem {
@@ -97,11 +110,13 @@ function ThreeScene({
   containerRef, 
   pointCloudUrl,
   modelFormat,
+  onBimSelect,
 }: { 
   filters: FilterCategory[]; 
   containerRef: React.RefObject<HTMLDivElement>;
   pointCloudUrl?: string;
   modelFormat: 'ply' | 'obj';
+  onBimSelect?: (id: string | null) => void;
 }) {
   useEffect(() => {
     if (!containerRef.current) return;
@@ -180,6 +195,8 @@ function ThreeScene({
 
     // Create room elements array (used for cleanup)
     const roomElements: THREE.Mesh[] = [];
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
 
     // If we have a point cloud URL, load and display it
     if (pointCloudUrl && modelFormat === 'ply') {
@@ -262,6 +279,10 @@ function ThreeScene({
           obj.traverse((child) => {
             if ((child as THREE.Mesh).isMesh) {
               const mesh = child as THREE.Mesh;
+              const sourceName = mesh.name || mesh.parent?.name || '';
+              if (sourceName) {
+                mesh.userData.bimId = sourceName;
+              }
               if (!mesh.material) {
                 mesh.material = new THREE.MeshStandardMaterial({ color: 0xbdbdbd });
               }
@@ -400,6 +421,26 @@ function ThreeScene({
     };
     animate();
 
+    const handleClick = (e: MouseEvent) => {
+      if (modelFormat !== 'obj' || !onBimSelect) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+
+      const intersects = raycaster.intersectObjects(scene.children, true);
+      const hit = intersects.find((item) => (item.object as THREE.Mesh).isMesh);
+      if (!hit) {
+        onBimSelect(null);
+        return;
+      }
+
+      const obj = hit.object as THREE.Mesh;
+      const id = obj.userData.bimId || obj.name || obj.parent?.name || null;
+      onBimSelect(id ? String(id) : null);
+    };
+    renderer.domElement.addEventListener('click', handleClick);
+
     // Handle resize
     const handleResize = () => {
       if (!container) return;
@@ -418,6 +459,7 @@ function ThreeScene({
       renderer.domElement.removeEventListener('mousemove', handleMouseMove);
       renderer.domElement.removeEventListener('mouseup', handleMouseUp);
       renderer.domElement.removeEventListener('wheel', handleWheel);
+      renderer.domElement.removeEventListener('click', handleClick);
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
@@ -431,7 +473,7 @@ function ThreeScene({
         }
       });
     };
-  }, [filters, pointCloudUrl, modelFormat, containerRef]);
+  }, [filters, pointCloudUrl, modelFormat, containerRef, onBimSelect]);
 
   return null;
 }
@@ -447,6 +489,7 @@ export default function ModelViewer({
   instancedPointCloudUrl,
   bimModelUrl,
   bimIfcUrl: _bimIfcUrl,
+  bimPropsUrl,
 }: ModelViewerProps) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
 
@@ -483,20 +526,80 @@ export default function ModelViewer({
     }
   ]);
 
-  const [selectedElement, setSelectedElement] = useState<SelectedElement | null>({
-    type: 'Wall',
-    material: 'Concrete',
-    dimensions: '10m × 3m × 0.2m',
-    properties: [
-      { label: 'Material', value: 'Concrete' },
-      { label: 'Thickness', value: '200mm' },
-      { label: 'Finish', value: 'Painted' },
-      { label: 'Fire Rating', value: '2 hours' },
-      { label: 'Acoustic Rating', value: '45dB' },
-    ]
-  });
-
+  const [selectedElement, setSelectedElement] = useState<SelectedElement | null>(null);
+  const [bimPropsById, setBimPropsById] = useState<Record<string, BimElementProps>>({});
   const [pointCloudLegend, setPointCloudLegend] = useState<LegendItem[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadBimProps = async () => {
+      if (!bimPropsUrl) {
+        setBimPropsById({});
+        return;
+      }
+      try {
+        const response = await fetch(bimPropsUrl);
+        if (!response.ok) {
+          setBimPropsById({});
+          return;
+        }
+        const data = await response.json() as Record<string, BimElementProps>;
+        if (!cancelled) {
+          setBimPropsById(data);
+        }
+      } catch {
+        if (!cancelled) {
+          setBimPropsById({});
+        }
+      }
+    };
+
+    loadBimProps();
+    return () => {
+      cancelled = true;
+    };
+  }, [bimPropsUrl]);
+
+  const handleBimSelect = (id: string | null) => {
+    if (!id) {
+      setSelectedElement(null);
+      return;
+    }
+
+    const info = bimPropsById[id];
+    if (!info) {
+      setSelectedElement({
+        type: 'Unknown',
+        elementId: id,
+        dimensions: '-',
+        properties: [{ label: 'ID', value: id }],
+      });
+      return;
+    }
+
+    const fmt = (v: number) => `${v.toFixed(2)} m`;
+    setSelectedElement({
+      type: info.className,
+      elementId: info.id,
+      material: 'N/A',
+      dimensions: `${fmt(info.dimensions.x)} x ${fmt(info.dimensions.y)} x ${fmt(info.dimensions.z)}`,
+      properties: [
+        { label: 'Class', value: info.className },
+        { label: 'Name', value: info.name || '-' },
+        { label: 'ID', value: info.id },
+        { label: 'Size X', value: fmt(info.dimensions.x) },
+        { label: 'Size Y', value: fmt(info.dimensions.y) },
+        { label: 'Size Z', value: fmt(info.dimensions.z) },
+      ],
+    });
+  };
+
+  useEffect(() => {
+    if (resolvedTab?.key !== 'bim') {
+      setSelectedElement(null);
+    }
+  }, [resolvedTab?.key]);
 
   useEffect(() => {
     let cancelled = false;
@@ -713,6 +816,7 @@ export default function ModelViewer({
               containerRef={canvasContainerRef}
               pointCloudUrl={activePointCloudUrl}
               modelFormat={activeModelFormat}
+              onBimSelect={resolvedTab?.key === 'bim' ? handleBimSelect : undefined}
             />
           </div>
         </div>
@@ -734,6 +838,17 @@ export default function ModelViewer({
                     {selectedElement.type}
                   </p>
                 </div>
+
+                {selectedElement.elementId && (
+                  <div>
+                    <h3 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001] mb-[0.52vw]">
+                      Element ID
+                    </h3>
+                    <p className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.94vw] text-[#666666] break-all">
+                      {selectedElement.elementId}
+                    </p>
+                  </div>
+                )}
 
                 <div>
                   <h3 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001] mb-[0.52vw]">
@@ -768,7 +883,7 @@ export default function ModelViewer({
                   </h3>
                   <div className="w-full h-[8.33vw] bg-[#cccccc] rounded-[0.52vw] flex items-center justify-center">
                     <span className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.83vw] text-[#666666]">
-                      {selectedElement.material}
+                      {selectedElement.material || 'N/A'}
                     </span>
                   </div>
                 </div>
@@ -783,3 +898,4 @@ export default function ModelViewer({
     </div>
   );
 }
+
