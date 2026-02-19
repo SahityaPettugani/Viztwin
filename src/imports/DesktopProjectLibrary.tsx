@@ -20,6 +20,7 @@ interface Project {
   pointCloudInstancedUrl?: string;
   bimModelUrl?: string;
   bimIfcUrl?: string;
+  bimPropsUrl?: string;
   pointCloudUrl?: string;
 }
 
@@ -155,6 +156,7 @@ export default function DesktopProjectLibrary({
     instanced?: string;
     bim?: string;
     bimIfc?: string;
+    bimProps?: string;
   } | undefined>(undefined);
   const [selectedTitle, setSelectedTitle] = useState<string>('');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -206,6 +208,7 @@ export default function DesktopProjectLibrary({
       instanced?: string;
       bim?: string;
       bimIfc?: string;
+      bimProps?: string;
     }
   ) => {
     setSelectedProject(image);
@@ -250,6 +253,7 @@ export default function DesktopProjectLibrary({
               instanced: project.pointCloudInstancedUrl,
               bim: project.bimModelUrl,
               bimIfc: project.bimIfcUrl,
+              bimProps: project.bimPropsUrl,
             })}
           />
         );
@@ -334,6 +338,7 @@ export default function DesktopProjectLibrary({
           instancedPointCloudUrl={selectedPointCloud?.instanced}
           bimModelUrl={selectedPointCloud?.bim}
           bimIfcUrl={selectedPointCloud?.bimIfc}
+          bimPropsUrl={selectedPointCloud?.bimProps}
         />
       )}
       

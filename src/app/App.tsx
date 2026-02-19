@@ -27,6 +27,7 @@ interface Project {
   pointCloudInstancedUrl?: string;
   bimModelUrl?: string;
   bimIfcUrl?: string;
+  bimPropsUrl?: string;
   pointCloudFile?: File;
 }
 
@@ -134,6 +135,7 @@ export default function App() {
         let instancedUrl: string | undefined;
         let bimModelUrl: string | undefined;
         let bimIfcUrl: string | undefined;
+        let bimPropsUrl: string | undefined;
 
         if (processResponse.ok) {
           const processResult = await processResponse.json();
@@ -152,6 +154,7 @@ export default function App() {
 
           bimModelUrl = processResult.bimObjUrl;
           bimIfcUrl = processResult.bimIfcUrl;
+          bimPropsUrl = processResult.bimPropsUrl;
         } else {
           const errorData = await processResponse.json().catch(() => ({}));
           console.warn('Processing failed, continuing with original file:', errorData);
@@ -182,6 +185,7 @@ export default function App() {
           pointCloudInstancedUrl: instancedUrl,
           bimModelUrl,
           bimIfcUrl,
+          bimPropsUrl,
           pointCloudFile: undefined
         };
 
