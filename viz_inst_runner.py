@@ -121,7 +121,7 @@ def filter_small_instances(instances_dict, min_points_thresholds):
     return cleaned_dict
 
 
-def save_instances(instances_dict, output_dir: Path):
+def save_instances(instances_dict, output_dir: Path, combined_name: str):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for class_name, instances in instances_dict.items():
@@ -140,7 +140,7 @@ def save_instances(instances_dict, output_dir: Path):
         for instance in instances:
             combined_pc += instance
 
-    combined_filename = output_dir / "all_instances_combined.ply"
+    combined_filename = output_dir / combined_name
     o3d.io.write_point_cloud(str(combined_filename), combined_pc)
     print(f"Combined point cloud saved to {combined_filename}")
     return combined_filename
@@ -313,7 +313,7 @@ def main(args):
     if args.voxel_size > 0:
         for class_name, instances in all_instances.items():
             all_instances[class_name] = [maybe_downsample(pcd, args.voxel_size) for pcd in instances]
-    save_instances(all_instances, output_dir)
+    save_instances(all_instances, output_dir, args.output_name)
     return 0
 
 
@@ -324,6 +324,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", action="append", default=[], help="Path(s) to BIMNet checkpoint(s)")
     parser.add_argument("--cube_edge", type=int, default=96, help="Voxel grid edge length")
     parser.add_argument("--num_classes", type=int, default=8, help="Number of BIMNet output classes")
+    parser.add_argument("--output_name", default="all_instances_combined.ply", help="Combined output filename")
     parser.add_argument("--voxel_size", type=float, default=0.02, help="Downsample voxel size (0 to disable)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU")
 
