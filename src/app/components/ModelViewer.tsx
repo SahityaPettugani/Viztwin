@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { X, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { StandardizedHeaderS } from '../../imports/SharedHeader';
 import * as THREE from 'three';
@@ -197,7 +197,6 @@ function ThreeScene({
     const roomElements: THREE.Mesh[] = [];
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
-
     // If we have a point cloud URL, load and display it
     if (pointCloudUrl && modelFormat === 'ply') {
       const loader = new PLYLoader();
@@ -561,7 +560,7 @@ export default function ModelViewer({
     };
   }, [bimPropsUrl]);
 
-  const handleBimSelect = (id: string | null) => {
+  const handleBimSelect = useCallback((id: string | null) => {
     if (!id) {
       setSelectedElement(null);
       return;
@@ -593,7 +592,7 @@ export default function ModelViewer({
         { label: 'Size Z', value: fmt(info.dimensions.z) },
       ],
     });
-  };
+  }, [bimPropsById]);
 
   useEffect(() => {
     if (resolvedTab?.key !== 'bim') {
