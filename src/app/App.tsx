@@ -25,6 +25,8 @@ interface Project {
   pointCloudRawUrl?: string;
   pointCloudSemanticUrl?: string;
   pointCloudInstancedUrl?: string;
+  bimModelUrl?: string;
+  bimIfcUrl?: string;
   pointCloudFile?: File;
 }
 
@@ -130,6 +132,8 @@ export default function App() {
 
         let semanticUrl: string | undefined;
         let instancedUrl: string | undefined;
+        let bimModelUrl: string | undefined;
+        let bimIfcUrl: string | undefined;
 
         if (processResponse.ok) {
           const processResult = await processResponse.json();
@@ -145,9 +149,19 @@ export default function App() {
           } else if (processResult.output) {
             instancedUrl = base64ToBlobUrl(processResult.output);
           }
+
+          bimModelUrl = processResult.bimObjUrl;
+          bimIfcUrl = processResult.bimIfcUrl;
         } else {
           const errorData = await processResponse.json().catch(() => ({}));
           console.warn('Processing failed, continuing with original file:', errorData);
+        }
+
+        if (!semanticUrl && instancedUrl) {
+          semanticUrl = instancedUrl;
+        }
+        if (semanticUrl && instancedUrl && semanticUrl === instancedUrl) {
+          instancedUrl = undefined;
         }
 
         setUploadProgress(85);
@@ -166,6 +180,8 @@ export default function App() {
           pointCloudRawUrl: originalUrl,
           pointCloudSemanticUrl: semanticUrl,
           pointCloudInstancedUrl: instancedUrl,
+          bimModelUrl,
+          bimIfcUrl,
           pointCloudFile: undefined
         };
 

@@ -18,6 +18,8 @@ interface Project {
   pointCloudRawUrl?: string;
   pointCloudSemanticUrl?: string;
   pointCloudInstancedUrl?: string;
+  bimModelUrl?: string;
+  bimIfcUrl?: string;
   pointCloudUrl?: string;
 }
 
@@ -151,6 +153,8 @@ export default function DesktopProjectLibrary({
     raw?: string;
     semantic?: string;
     instanced?: string;
+    bim?: string;
+    bimIfc?: string;
   } | undefined>(undefined);
   const [selectedTitle, setSelectedTitle] = useState<string>('');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -200,6 +204,8 @@ export default function DesktopProjectLibrary({
       raw?: string;
       semantic?: string;
       instanced?: string;
+      bim?: string;
+      bimIfc?: string;
     }
   ) => {
     setSelectedProject(image);
@@ -241,7 +247,9 @@ export default function DesktopProjectLibrary({
             onClick={() => handleProjectClick(project.image || img59L6StudyRoomBasePicture1, project.title, {
               raw: project.pointCloudRawUrl,
               semantic: project.pointCloudSemanticUrl,
-              instanced: project.pointCloudInstancedUrl
+              instanced: project.pointCloudInstancedUrl,
+              bim: project.bimModelUrl,
+              bimIfc: project.bimIfcUrl,
             })}
           />
         );
@@ -324,6 +332,8 @@ export default function DesktopProjectLibrary({
           rawPointCloudUrl={selectedPointCloud?.raw}
           semanticPointCloudUrl={selectedPointCloud?.semantic}
           instancedPointCloudUrl={selectedPointCloud?.instanced}
+          bimModelUrl={selectedPointCloud?.bim}
+          bimIfcUrl={selectedPointCloud?.bimIfc}
         />
       )}
       
