@@ -27,10 +27,72 @@ interface SelectedElement {
   properties: { label: string; value: string }[];
 }
 
+interface LegendItem {
+  name: string;
+  color: string;
+}
+
+const semanticLegend: LegendItem[] = [
+  { name: 'Ceiling', color: 'rgb(31, 119, 180)' },
+  { name: 'Floor', color: 'rgb(174, 199, 232)' },
+  { name: 'Wall', color: 'rgb(255, 127, 14)' },
+  { name: 'Beam', color: 'rgb(255, 187, 120)' },
+  { name: 'Column', color: 'rgb(44, 160, 44)' },
+  { name: 'Window', color: 'rgb(152, 223, 138)' },
+  { name: 'Door', color: 'rgb(214, 39, 40)' },
+  { name: 'Unassigned', color: 'rgb(255, 152, 150)' },
+];
+
+const classOrder = ['ceiling', 'floor', 'wall', 'beam', 'column', 'window', 'door', 'unassigned'];
+
+const toLabel = (name: string) => name.charAt(0).toUpperCase() + name.slice(1);
+
+const getRepresentativeColorFromPly = (url: string): Promise<[number, number, number] | null> =>
+  new Promise((resolve) => {
+    const loader = new PLYLoader();
+    loader.load(
+      url,
+      (geometry) => {
+        const colorAttr = geometry.getAttribute('color');
+        if (!colorAttr || colorAttr.count === 0) {
+          resolve(null);
+          return;
+        }
+
+        const colorArray = colorAttr.array as ArrayLike<number>;
+        let sumR = 0;
+        let sumG = 0;
+        let sumB = 0;
+
+        for (let i = 0; i < colorArray.length; i += 3) {
+          let r = colorArray[i] as number;
+          let g = colorArray[i + 1] as number;
+          let b = colorArray[i + 2] as number;
+          if (Math.max(r, g, b) > 1.0) {
+            r /= 255;
+            g /= 255;
+            b /= 255;
+          }
+          sumR += r;
+          sumG += g;
+          sumB += b;
+        }
+
+        const n = colorAttr.count;
+        const rr = Math.max(0, Math.min(255, Math.round((sumR / n) * 255)));
+        const gg = Math.max(0, Math.min(255, Math.round((sumG / n) * 255)));
+        const bb = Math.max(0, Math.min(255, Math.round((sumB / n) * 255)));
+        resolve([rr, gg, bb]);
+      },
+      undefined,
+      () => resolve(null),
+    );
+  });
+
 function ThreeScene({ 
   filters, 
   containerRef, 
-  pointCloudUrl 
+  pointCloudUrl
 }: { 
   filters: FilterCategory[]; 
   containerRef: React.RefObject<HTMLDivElement>;
@@ -330,7 +392,7 @@ function ThreeScene({
         }
       });
     };
-  }, [filters, pointCloudUrl]);
+  }, [filters, pointCloudUrl, containerRef]);
 
   return null;
 }
@@ -392,16 +454,89 @@ export default function ModelViewer({
     ]
   });
 
-  const pointCloudLegend = [
-    { name: 'Ceiling', color: 'rgb(31, 119, 180)' },
-    { name: 'Floor', color: 'rgb(174, 199, 232)' },
-    { name: 'Wall', color: 'rgb(255, 127, 14)' },
-    { name: 'Beam', color: 'rgb(255, 187, 120)' },
-    { name: 'Column', color: 'rgb(44, 160, 44)' },
-    { name: 'Window', color: 'rgb(152, 223, 138)' },
-    { name: 'Door', color: 'rgb(214, 39, 40)' },
-    { name: 'Unknown', color: 'rgb(255, 152, 150)' },
-  ];
+  const [pointCloudLegend, setPointCloudLegend] = useState<LegendItem[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const buildLegend = async () => {
+      if (!activePointCloudUrl) {
+        setPointCloudLegend([]);
+        return;
+      }
+
+      if (resolvedTab?.key === 'semantic') {
+        setPointCloudLegend(semanticLegend);
+        return;
+      }
+
+      if (resolvedTab?.key !== 'instanced') {
+        setPointCloudLegend([]);
+        return;
+      }
+
+      const baseUrl = activePointCloudUrl.replace(/\/all_instances_combined\.ply$/i, '');
+      if (baseUrl === activePointCloudUrl) {
+        setPointCloudLegend([]);
+        return;
+      }
+
+      try {
+        const summaryResponse = await fetch(`${baseUrl}/instantiation_summary.json`);
+        if (!summaryResponse.ok) {
+          setPointCloudLegend([]);
+          return;
+        }
+
+        const summary = await summaryResponse.json() as Record<string, number>;
+        const legend: LegendItem[] = [];
+        const legendMax = 60;
+
+        for (const className of classOrder) {
+          const instanceCount = Number(summary[className] || 0);
+          if (instanceCount <= 0) continue;
+
+          const instancePromises = Array.from({ length: instanceCount }, (_, idx) => {
+            const fileIdx = String(idx).padStart(3, '0');
+            const sampleUrl = `${baseUrl}/${className}/${className}_instance_${fileIdx}.ply`;
+            return getRepresentativeColorFromPly(sampleUrl);
+          });
+
+          const colors = (await Promise.all(instancePromises)).filter(Boolean) as [number, number, number][];
+          const uniqueByClass = new Map<string, [number, number, number]>();
+          for (const [r, g, b] of colors) {
+            const key = `${r},${g},${b}`;
+            if (!uniqueByClass.has(key)) {
+              uniqueByClass.set(key, [r, g, b]);
+            }
+          }
+
+          const classColors = Array.from(uniqueByClass.values());
+          classColors.forEach(([r, g, b], idx) => {
+            if (legend.length >= legendMax) return;
+            legend.push({
+              name: classColors.length > 1 ? `${toLabel(className)} ${idx + 1}` : toLabel(className),
+              color: `rgb(${r}, ${g}, ${b})`,
+            });
+          });
+          if (legend.length >= legendMax) break;
+        }
+
+        if (!cancelled) {
+          setPointCloudLegend(legend);
+        }
+      } catch {
+        if (!cancelled) {
+          setPointCloudLegend([]);
+        }
+      }
+    };
+
+    buildLegend();
+    return () => {
+      cancelled = true;
+    };
+  }, [activePointCloudUrl, resolvedTab?.key]);
 
   const toggleFilter = (categoryName: string, itemName: string) => {
     setFilters(prev => prev.map(category => {
@@ -474,14 +609,16 @@ export default function ModelViewer({
           {activePointCloudUrl && (
             <div className="absolute top-[1.04vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
-                Semantic Class Colors
+                {resolvedTab?.key === 'semantic' ? 'Semantic Class Colors' : 'Point Cloud Colors'}
               </p>
               <p className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.68vw] text-[#666666] mb-[0.52vw]">
-                Instance colors may vary per object
+                {resolvedTab?.key === 'semantic'
+                  ? 'Semantic class legend'
+                  : 'Instanced class legend'}
               </p>
               <div className="grid grid-cols-2 gap-x-[1.04vw] gap-y-[0.42vw]">
                 {pointCloudLegend.map((item) => (
-                  <div key={item.name} className="flex items-center gap-[0.42vw]">
+                  <div key={`${item.name}-${item.color}`} className="flex items-center gap-[0.42vw]">
                     <span className="inline-block size-[0.68vw] rounded-full border border-[#cccccc]" style={{ backgroundColor: item.color }} />
                     <span className="font-['Satoshi_Variable:Medium',sans-serif] text-[0.73vw] text-[#000001]">
                       {item.name}
@@ -525,7 +662,11 @@ export default function ModelViewer({
 
           {/* Three.js Container */}
           <div ref={canvasContainerRef} className="w-full h-full">
-            <ThreeScene filters={filters} containerRef={canvasContainerRef} pointCloudUrl={activePointCloudUrl} />
+            <ThreeScene
+              filters={filters}
+              containerRef={canvasContainerRef}
+              pointCloudUrl={activePointCloudUrl}
+            />
           </div>
         </div>
 
