@@ -3,6 +3,7 @@ import { X, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { StandardizedHeaderS } from '../../imports/SharedHeader';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 
 interface ModelViewerProps {
   projectTitle: string;
@@ -13,6 +14,8 @@ interface ModelViewerProps {
   rawPointCloudUrl?: string;
   semanticPointCloudUrl?: string;
   instancedPointCloudUrl?: string;
+  bimModelUrl?: string;
+  bimIfcUrl?: string;
 }
 
 interface FilterCategory {
@@ -92,11 +95,13 @@ const getRepresentativeColorFromPly = (url: string): Promise<[number, number, nu
 function ThreeScene({ 
   filters, 
   containerRef, 
-  pointCloudUrl
+  pointCloudUrl,
+  modelFormat,
 }: { 
   filters: FilterCategory[]; 
   containerRef: React.RefObject<HTMLDivElement>;
   pointCloudUrl?: string;
+  modelFormat: 'ply' | 'obj';
 }) {
   useEffect(() => {
     if (!containerRef.current) return;
@@ -177,7 +182,7 @@ function ThreeScene({
     const roomElements: THREE.Mesh[] = [];
 
     // If we have a point cloud URL, load and display it
-    if (pointCloudUrl) {
+    if (pointCloudUrl && modelFormat === 'ply') {
       const loader = new PLYLoader();
       loader.load(
         pointCloudUrl,
@@ -236,6 +241,40 @@ function ThreeScene({
         },
         (error) => {
           console.error('Error loading point cloud:', error);
+        }
+      );
+    } else if (pointCloudUrl && modelFormat === 'obj') {
+      const loader = new OBJLoader();
+      loader.load(
+        pointCloudUrl,
+        (obj) => {
+          const box = new THREE.Box3().setFromObject(obj);
+          const center = new THREE.Vector3();
+          box.getCenter(center);
+          obj.position.sub(center);
+
+          const size = new THREE.Vector3();
+          box.getSize(size);
+          const maxDim = Math.max(size.x, size.y, size.z) || 1;
+          const scale = 5 / maxDim;
+          obj.scale.setScalar(scale);
+
+          obj.traverse((child) => {
+            if ((child as THREE.Mesh).isMesh) {
+              const mesh = child as THREE.Mesh;
+              if (!mesh.material) {
+                mesh.material = new THREE.MeshStandardMaterial({ color: 0xbdbdbd });
+              }
+            }
+          });
+
+          scene.add(obj);
+          camera.position.set(8, 6, 8);
+          camera.lookAt(0, 0, 0);
+        },
+        undefined,
+        (error) => {
+          console.error('Error loading BIM OBJ:', error);
         }
       );
     } else {
@@ -392,7 +431,7 @@ function ThreeScene({
         }
       });
     };
-  }, [filters, pointCloudUrl, containerRef]);
+  }, [filters, pointCloudUrl, modelFormat, containerRef]);
 
   return null;
 }
@@ -405,20 +444,23 @@ export default function ModelViewer({
   onNavigateLibrary,
   rawPointCloudUrl,
   semanticPointCloudUrl,
-  instancedPointCloudUrl
+  instancedPointCloudUrl,
+  bimModelUrl,
+  bimIfcUrl: _bimIfcUrl,
 }: ModelViewerProps) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
 
-  const [activeTab, setActiveTab] = useState<'raw' | 'semantic' | 'instanced'>('instanced');
+  const [activeTab, setActiveTab] = useState<'semantic' | 'instanced' | 'bim'>('semantic');
 
   const availableTabs = [
-    { key: 'raw' as const, label: 'Raw', url: rawPointCloudUrl },
     { key: 'semantic' as const, label: 'Semantic', url: semanticPointCloudUrl },
     { key: 'instanced' as const, label: 'Instantiated', url: instancedPointCloudUrl },
+    { key: 'bim' as const, label: 'BIM Model', url: bimModelUrl },
   ].filter((tab) => Boolean(tab.url));
 
   const resolvedTab = availableTabs.find((tab) => tab.key === activeTab) || availableTabs[0];
   const activePointCloudUrl = resolvedTab?.url;
+  const activeModelFormat = resolvedTab?.key === 'bim' ? 'obj' as const : 'ply' as const;
   
   const [filters, setFilters] = useState<FilterCategory[]>([
     {
@@ -465,12 +507,14 @@ export default function ModelViewer({
         return;
       }
 
-      if (resolvedTab?.key === 'semantic') {
+      const isInstancedCombined = /\/all_instances_combined\.ply$/i.test(activePointCloudUrl);
+
+      if (resolvedTab?.key === 'semantic' && !isInstancedCombined) {
         setPointCloudLegend(semanticLegend);
         return;
       }
 
-      if (resolvedTab?.key !== 'instanced') {
+      if (resolvedTab?.key !== 'instanced' && resolvedTab?.key !== 'semantic') {
         setPointCloudLegend([]);
         return;
       }
@@ -598,7 +642,7 @@ export default function ModelViewer({
           </div>
         </div>
 
-        {/* Center - 3D Canvas */}
+          {/* Center - 3D Canvas */}
         <div className="flex-1 relative bg-[#fafafa]">
           <div className="absolute top-[1.04vw] left-[1.04vw] z-10">
             <h1 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.56vw] text-[#000001]">
@@ -606,14 +650,16 @@ export default function ModelViewer({
             </h1>
           </div>
 
-          {activePointCloudUrl && (
+          {activePointCloudUrl && resolvedTab?.key !== 'bim' && (
             <div className="absolute top-[1.04vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
                 {resolvedTab?.key === 'semantic' ? 'Semantic Class Colors' : 'Point Cloud Colors'}
               </p>
               <p className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.68vw] text-[#666666] mb-[0.52vw]">
                 {resolvedTab?.key === 'semantic'
-                  ? 'Semantic class legend'
+                  ? (/\/all_instances_combined\.ply$/i.test(activePointCloudUrl)
+                      ? 'Instanced class legend'
+                      : 'Semantic class legend')
                   : 'Instanced class legend'}
               </p>
               <div className="grid grid-cols-2 gap-x-[1.04vw] gap-y-[0.42vw]">
@@ -666,6 +712,7 @@ export default function ModelViewer({
               filters={filters}
               containerRef={canvasContainerRef}
               pointCloudUrl={activePointCloudUrl}
+              modelFormat={activeModelFormat}
             />
           </div>
         </div>
