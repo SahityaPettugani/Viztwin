@@ -25,37 +25,46 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-const listPlyFiles = async (dir, startTime) => {
-  try {
-    const entries = await fs.readdir(dir);
-    const candidates = await Promise.all(entries.map(async (entry) => {
-      const fullPath = path.join(dir, entry);
-      const stats = await fs.stat(fullPath);
-      if (!stats.isFile() || path.extname(entry).toLowerCase() !== '.ply') {
-        return null;
-      }
-      if (stats.mtimeMs < startTime - 1000) {
-        return null;
-      }
-      return { fullPath, mtimeMs: stats.mtimeMs };
-    }));
+const findLatestCombinedOutput = async (dir, startTime) => {
+  const candidates = [];
 
-    return candidates.filter(Boolean);
-  } catch {
-    return [];
-  }
-};
-
-const findLatestOutput = async (inputPath, startTime) => {
-  const outputDirs = [outputsDir, path.dirname(inputPath)];
-  for (const dir of outputDirs) {
-    const files = await listPlyFiles(dir, startTime);
-    if (files.length > 0) {
-      files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-      return files[0].fullPath;
+  const walk = async (currentDir) => {
+    let entries = [];
+    try {
+      entries = await fs.readdir(currentDir, { withFileTypes: true });
+    } catch {
+      return;
     }
+
+    await Promise.all(entries.map(async (entry) => {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        return;
+      }
+
+      if (!entry.isFile() || entry.name !== 'all_instances_combined.ply') {
+        return;
+      }
+
+      try {
+        const stats = await fs.stat(fullPath);
+        if (stats.mtimeMs >= startTime - 2000) {
+          candidates.push({ fullPath, mtimeMs: stats.mtimeMs });
+        }
+      } catch {
+        // Ignore file stat errors.
+      }
+    }));
+  };
+
+  await walk(dir);
+
+  if (candidates.length === 0) {
+    return null;
   }
-  return null;
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates[0].fullPath;
 };
 
 const runPython = (scriptPath, args) => {
@@ -91,31 +100,6 @@ const runPython = (scriptPath, args) => {
   });
 };
 
-const runPythonDetached = (scriptPath, args, onDone) => {
-  const pythonExec = process.env.PYTHON_EXEC || 'python';
-  const fullArgs = [scriptPath, ...args];
-  const child = spawn(pythonExec, fullArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-  child.stdout.on('data', (chunk) => {
-    console.log('[process-pointcloud] Instanced stdout:\n' + chunk.toString());
-  });
-
-  child.stderr.on('data', (chunk) => {
-    console.warn('[process-pointcloud] Instanced stderr:\n' + chunk.toString());
-  });
-
-  child.on('close', (code) => {
-    if (code === 0) {
-      console.log('[process-pointcloud] Instanced processing complete');
-    } else {
-      console.warn('[process-pointcloud] Instanced processing failed with code:', code);
-    }
-    if (onDone) {
-      onDone();
-    }
-  });
-};
-
 app.use(cors());
 app.use('/outputs', express.static(outputsDir));
 
@@ -137,80 +121,64 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
 
   try {
     const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\val_best_miou.pth';
-    const instancedScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'viz_inst_runner.py');
-    const semanticScriptPath = process.env.PYTHON_SEMANTIC_SCRIPT || path.join(__dirname, 'semantic_runner.py');
-
-    const commonArgs = [
+    const vizInstScriptPath = process.env.PYTHON_SCRIPT || 'C:\\Users\\iamsa\\Downloads\\scan2bim\\viz_inst.py';
+    const vizInstArgs = [
       '--input_file',
       inputPath,
-      '--output_dir',
-      outputsDir,
       '--checkpoint',
       checkpointPath,
-      '--voxel_size',
-      process.env.PLY_VOXEL_SIZE || '0.02'
+      '--output_dir',
+      outputsDir,
+      '--no-vis-instances'
     ];
 
-    const instancedOutputName = `${path.parse(inputPath).name}_instanced.ply`;
-    const semanticArgs = [...commonArgs];
-    const instancedArgs = [...commonArgs, '--output_name', instancedOutputName];
-
     if (process.env.PYTHON_CPU === '1') {
-      commonArgs.push('--cpu');
+      vizInstArgs.push('--cpu');
     }
 
-    const semanticStart = Date.now();
-    const semanticResult = await runPython(semanticScriptPath, semanticArgs);
-    console.log('[process-pointcloud] Semantic duration (ms):', Date.now() - semanticStart);
-    if (semanticResult.stdout) {
-      console.log('[process-pointcloud] Semantic stdout:\n' + semanticResult.stdout);
+    const runStart = Date.now();
+    const result = await runPython(vizInstScriptPath, vizInstArgs);
+    console.log('[process-pointcloud] viz_inst.py duration (ms):', Date.now() - runStart);
+    if (result.stdout) {
+      console.log('[process-pointcloud] viz_inst.py stdout:\n' + result.stdout);
     }
-    if (semanticResult.stderr) {
-      console.warn('[process-pointcloud] Semantic stderr:\n' + semanticResult.stderr);
+    if (result.stderr) {
+      console.warn('[process-pointcloud] viz_inst.py stderr:\n' + result.stderr);
     }
 
-    console.log('[process-pointcloud] Starting instanced processing in background');
-    runPythonDetached(instancedScriptPath, instancedArgs, async () => {
-      try {
-        await fs.unlink(inputPath);
-        console.log('[process-pointcloud] Cleaned up input file:', inputPath);
-      } catch {
-        // Ignore cleanup failures.
-      }
-    });
-    const semanticPath = path.join(outputsDir, `${path.parse(inputPath).name}_semantic.ply`);
-    const instancedPath = path.join(outputsDir, instancedOutputName);
+    const runDirMatch = result.stdout?.match(/Run output directory:\s*(.+)/i);
+    const parsedRunDir = runDirMatch?.[1]?.trim();
+    let instancedPath = parsedRunDir
+      ? path.resolve(parsedRunDir, 'all_instances_combined.ply')
+      : null;
 
-    const semanticUrl = `/outputs/${path.relative(outputsDir, semanticPath).split(path.sep).join('/')}`;
-    const instancedUrl = `/outputs/${path.relative(outputsDir, instancedPath).split(path.sep).join('/')}`;
+    const instancedExists = instancedPath
+      ? await fs.stat(instancedPath).then(() => true).catch(() => false)
+      : false;
 
-    const semanticExists = await fs.stat(semanticPath).then(() => true).catch(() => false);
-    const instancedExists = await fs.stat(instancedPath).then(() => true).catch(() => false);
+    if (!instancedExists) {
+      instancedPath = await findLatestCombinedOutput(outputsDir, startTime);
+    }
 
-    if (!semanticExists) {
-      console.warn('[process-pointcloud] Missing semantic output for input:', inputPath);
+    if (!instancedPath) {
       res.status(500).json({
         success: false,
-        error: 'Missing semantic output PLY after processing',
+        error: 'Missing all_instances_combined.ply after viz_inst.py processing',
       });
       return;
     }
-    console.log('[process-pointcloud] Semantic output:', semanticPath);
-    if (instancedExists) {
-      console.log('[process-pointcloud] Instanced output:', instancedPath);
-    }
+
+    console.log('[process-pointcloud] Instanced output:', instancedPath);
     console.log('[process-pointcloud] Total request duration (ms):', Date.now() - startTime);
+
+    const instancedUrl = `/outputs/${path.relative(outputsDir, instancedPath).split(path.sep).join('/')}`;
 
     res.json({
       success: true,
-      message: instancedExists
-        ? 'Point cloud processed successfully'
-        : 'Semantic output ready; instanced processing started',
-      outputUrl: instancedExists ? instancedUrl : undefined,
-      semanticUrl,
-      instancedUrl: instancedExists ? instancedUrl : undefined,
-      semanticFile: semanticPath,
-      outputFile: instancedExists ? instancedPath : undefined
+      message: 'Point cloud processed successfully via viz_inst.py pipeline',
+      outputUrl: instancedUrl,
+      instancedUrl,
+      outputFile: instancedPath
     });
   } catch (err) {
     const errorMessage = err?.error?.message || err?.message || 'Python processing failed';
@@ -228,7 +196,12 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       pythonOutput: err?.stderr || ''
     });
   } finally {
-    // Cleanup happens after background instanced processing completes.
+    try {
+      await fs.unlink(inputPath);
+      console.log('[process-pointcloud] Cleaned up input file:', inputPath);
+    } catch {
+      // Ignore cleanup failures.
+    }
   }
 });
 
