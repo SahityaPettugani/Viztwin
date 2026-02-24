@@ -257,21 +257,30 @@ def main(args):
     models = build_models(args.checkpoint, device, num_classes=args.num_classes)
 
     print("Running BIMNet inference...")
-    pcd, point_labels = run_bimnet_inference(
+    pcd, preds_volume, points_grid, point_labels = run_bimnet_inference(
         pcd, models, cube_edge=args.cube_edge, num_classes=args.num_classes, device=device
     )
 
-    print("Smoothing predictions with KNN...")
-    point_labels = smooth_labels_knn(pcd, point_labels, k=10)
+    # --- NEW STEP: SMOOTH LABELS ---
+    point_count = len(pcd.points)
+    if point_count > 500000:
+        print(
+            f"\nStep 0.5: Skipping KNN smoothing because point count "
+            f"({point_count}) exceeds 500000."
+        )
+        print("Use --smooth-max-points with a higher value to force smoothing.")
+    else:
+        print(f"\nStep 0.5: Smoothing predictions with KNN (k=15)...")
+        point_labels = smooth_labels_knn(pcd, point_labels, k=15)
 
-    print("Separating point cloud by semantic class...")
+    print("\nStep 1: Separating point cloud by semantic class...")
     separated_classes = separate_by_label(pcd, point_labels)
 
     if not separated_classes:
         print("Warning: No classes found! Check your color mappings.")
         return 1
 
-    print("Instantiating classes...")
+    print("\nStep 2: Instantiating classes...")
     all_instances = {}
 
     planar_classes = ['wall', 'floor', 'ceiling']
@@ -283,9 +292,14 @@ def main(args):
         'unassigned': {'eps': 0.05, 'min_points': 200},
     }
 
+    # Apply stronger smoothing before instance extraction
+    print("Applying strong smoothing (KNN, k=15)...")
+    point_labels = smooth_labels_knn(pcd, point_labels, k=15)
+    separated_classes = separate_by_label(pcd, point_labels)
+
     for class_name, class_pcd in separated_classes.items():
         if class_name in planar_classes:
-            instances = instantiate_planar_iterative(class_pcd, class_name, dist_thresh=0.20)
+            instances = instantiate_planar_iterative(class_pcd, class_name, dist_thresh=0.15, min_points=2000)
         else:
             params = dbscan_params.get(class_name, {'eps': 0.1, 'min_points': 100})
             instances = instantiate_with_dbscan(
@@ -297,19 +311,19 @@ def main(args):
         all_instances[class_name] = instances
 
     cleaning_thresholds = {
-        'ceiling': 3000,
-        'floor': 3000,
-        'wall': 1500,
-        'beam': 300,
-        'column': 300,
-        'door': 1000,
-        'window': 300,
-        'unassigned': 100,
+        'ceiling': 2000,
+        'floor': 2000,
+        'wall': 1000,
+        'beam': 500,
+        'column': 500,
+        'door': 500,
+        'window': 200,
+        # 'unassigned': 100,
     }
 
     all_instances = filter_small_instances(all_instances, cleaning_thresholds)
 
-    print("Saving instances...")
+    print("\nStep 3: Saving instances...")
     if args.voxel_size > 0:
         for class_name, instances in all_instances.items():
             all_instances[class_name] = [maybe_downsample(pcd, args.voxel_size) for pcd in instances]
