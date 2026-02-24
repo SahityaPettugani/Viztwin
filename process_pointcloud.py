@@ -234,7 +234,7 @@ def run_bimnet_inference(pcd, models, cube_edge=128, num_classes=8, device="cuda
     return pcd, preds, points_grid, point_labels
 
 
-def instantiate_planar_iterative(pcd, class_name, dist_thresh=0.20, min_points=500):
+def instantiate_planar_iterative(pcd, class_name, dist_thresh=0.20, min_points=2000):
     remaining_pcd = pcd
     instances = []
 
@@ -302,9 +302,9 @@ def main(args):
 
     for class_name, class_pcd in separated_classes.items():
         if class_name in planar_classes:
-            instances = instantiate_planar_iterative(class_pcd, class_name, dist_thresh=0.20)
+            instances = instantiate_planar_iterative(class_pcd, class_name, dist_thresh=0.15)
         else:
-            params = dbscan_params.get(class_name, {'eps': 0.1, 'min_points': 100})
+            params = dbscan_params.get(class_name, {'eps': 0.1, 'min_points': 200})
             instances = instantiate_with_dbscan(
                 class_pcd,
                 class_name,
