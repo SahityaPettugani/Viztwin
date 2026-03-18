@@ -108,19 +108,25 @@ function TheStandardizedHeader({
   );
 }
 
-function Frame() {
+function Frame({ label }: { label: string }) {
   return (
     <div className="absolute inset-0 overflow-clip">
       <div className="absolute bg-[#e8e9eb] h-full left-1/2 -translate-x-1/2 rounded-[27.5px] top-0 w-[88.1%]" />
-      <p className="absolute font-['Satoshi_Variable:Medium',sans-serif] leading-[normal] left-1/2 -translate-x-1/2 not-italic text-[#1e1e1e] text-[1.05vw] text-center top-[22%] whitespace-nowrap">Log in / Sign up</p>
+      <p className="absolute font-['Satoshi_Variable:Medium',sans-serif] leading-[normal] left-1/2 -translate-x-1/2 not-italic text-[#1e1e1e] text-[1.05vw] text-center top-[22%] whitespace-nowrap">{label}</p>
     </div>
   );
 }
 
-function LogInNSignUpButton() {
+function LogInNSignUpButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick?: () => void;
+}) {
   return (
-    <div className="absolute h-[2.6vw] right-[0.5%] top-[3.96vw] w-[13.13vw] cursor-pointer hover:opacity-80 transition-opacity" data-name="log in n sign up button">
-      <Frame />
+    <div className="absolute h-[2.6vw] right-[0.5%] top-[3.96vw] w-[13.13vw] cursor-pointer hover:opacity-80 transition-opacity" data-name="log in n sign up button" onClick={onClick}>
+      <Frame label={label} />
     </div>
   );
 }
@@ -129,12 +135,16 @@ export function StandardizedHeaderS({
   onNavigateHome, 
   onNavigateGetStarted, 
   onNavigateLibrary, 
-  activePage 
+  activePage,
+  authButtonLabel = 'Log in / Sign up',
+  onAuthButtonClick,
 }: {
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
   onNavigateLibrary: () => void;
   activePage: 'home' | 'library' | 'get-started';
+  authButtonLabel?: string;
+  onAuthButtonClick?: () => void;
 }) {
   return (
     <div className="fixed h-[8.8vw] left-0 top-0 w-full z-50" data-name="Standardized headerS">
@@ -144,7 +154,7 @@ export function StandardizedHeaderS({
         onNavigateLibrary={onNavigateLibrary}
         activePage={activePage}
       />
-      <LogInNSignUpButton />
+      <LogInNSignUpButton label={authButtonLabel} onClick={onAuthButtonClick} />
     </div>
   );
 }

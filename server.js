@@ -25,6 +25,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+const toOutputUrl = (targetPath) =>
+  `/outputs/${path.relative(outputsDir, targetPath).split(path.sep).join('/')}`;
+
 const findLatestCombinedOutput = async (dir, startTime) => {
   const candidates = [];
 
@@ -65,6 +68,28 @@ const findLatestCombinedOutput = async (dir, startTime) => {
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return candidates[0].fullPath;
+};
+
+const listFilesRecursive = async (dir, rootDir = dir) => {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const files = await Promise.all(entries.map(async (entry) => {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      return listFilesRecursive(fullPath, rootDir);
+    }
+    if (!entry.isFile()) {
+      return [];
+    }
+
+    const stats = await fs.stat(fullPath);
+    return [{
+      relativePath: path.relative(rootDir, fullPath).split(path.sep).join('/'),
+      size: stats.size,
+      url: toOutputUrl(fullPath),
+    }];
+  }));
+
+  return files.flat();
 };
 
 const runPython = (scriptPath, args, options = {}) => {
@@ -123,7 +148,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
 
   try {
     const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\val_best_miou.pth';
-    const vizInstScriptPath = process.env.PYTHON_SCRIPT || 'C:\\Users\\iamsa\\Downloads\\scan2bim\\viz_inst.py';
+    const vizInstScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'vizainst.py');
     const cloud2BimDir = process.env.CLOUD2BIM_DIR || 'C:\\Users\\iamsa\\Downloads\\Cloud2BIM-1.02\\Cloud2BIM-1.02';
     const json2IfcScriptPath = process.env.PYTHON_JSON2IFC_SCRIPT || path.join(cloud2BimDir, 'json2ifc.py');
     const ifcObjExporterScriptPath = process.env.PYTHON_IFC_EXPORTER_SCRIPT || path.join(__dirname, 'ifc_obj_exporter.py');
@@ -137,8 +162,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       '--checkpoint',
       checkpointPath,
       '--output_dir',
-      requestOutputDir,
-      '--no-vis-instances'
+      requestOutputDir
     ];
 
     if (process.env.PYTHON_CPU === '1') {
@@ -226,13 +250,13 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
         const hasObj = await fs.stat(bimObjPath).then(() => true).catch(() => false);
         const hasProps = await fs.stat(bimPropsPath).then(() => true).catch(() => false);
         if (hasIfc) {
-          bimIfcUrl = `/outputs/${path.relative(outputsDir, bimIfcPath).split(path.sep).join('/')}`;
+          bimIfcUrl = toOutputUrl(bimIfcPath);
         }
         if (hasObj) {
-          bimObjUrl = `/outputs/${path.relative(outputsDir, bimObjPath).split(path.sep).join('/')}`;
+          bimObjUrl = toOutputUrl(bimObjPath);
         }
         if (hasProps) {
-          bimPropsUrl = `/outputs/${path.relative(outputsDir, bimPropsPath).split(path.sep).join('/')}`;
+          bimPropsUrl = toOutputUrl(bimPropsPath);
         }
       } catch (bimError) {
         console.warn('[process-pointcloud] BIM conversion failed:', bimError?.message || bimError);
@@ -243,7 +267,8 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
 
     console.log('[process-pointcloud] Total request duration (ms):', Date.now() - startTime);
 
-    const instancedUrl = `/outputs/${path.relative(outputsDir, instancedPath).split(path.sep).join('/')}`;
+    const instancedUrl = toOutputUrl(instancedPath);
+    const generatedFiles = await listFilesRecursive(runDir);
 
     res.json({
       success: true,
@@ -254,6 +279,12 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       bimIfcUrl,
       bimObjUrl,
       bimPropsUrl,
+      semanticRelativePath: path.relative(runDir, instancedPath).split(path.sep).join('/'),
+      instancedRelativePath: path.relative(runDir, instancedPath).split(path.sep).join('/'),
+      bimIfcRelativePath: bimIfcUrl ? path.relative(runDir, bimIfcPath).split(path.sep).join('/') : undefined,
+      bimObjRelativePath: bimObjUrl ? path.relative(runDir, bimObjPath).split(path.sep).join('/') : undefined,
+      bimPropsRelativePath: bimPropsUrl ? path.relative(runDir, bimPropsPath).split(path.sep).join('/') : undefined,
+      generatedFiles,
       outputFile: instancedPath,
       runOutputDir: runDir,
     });

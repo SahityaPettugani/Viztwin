@@ -19,12 +19,16 @@ export default function DesktopHomePage({
   onNavigateHome, 
   onNavigateGetStarted, 
   onNavigateLibrary,
-  onOpenUpload 
+  onOpenUpload,
+  authButtonLabel,
+  onAuthButtonClick,
 }: {
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
   onNavigateLibrary: () => void;
   onOpenUpload: () => void;
+  authButtonLabel?: string;
+  onAuthButtonClick?: () => void;
 }) {
   return (
     <div className="bg-white relative w-full min-h-screen overflow-x-hidden" data-name="Desktop - Home Page">
@@ -94,6 +98,8 @@ export default function DesktopHomePage({
         onNavigateGetStarted={onNavigateGetStarted}
         onNavigateLibrary={onNavigateLibrary}
         activePage="home"
+        authButtonLabel={authButtonLabel}
+        onAuthButtonClick={onAuthButtonClick}
       />
       
       {/* Bottom spacing */}

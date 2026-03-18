@@ -11,6 +11,8 @@ interface ModelViewerProps {
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
   onNavigateLibrary: () => void;
+  authButtonLabel?: string;
+  onAuthButtonClick?: () => void;
   rawPointCloudUrl?: string;
   semanticPointCloudUrl?: string;
   instancedPointCloudUrl?: string;
@@ -105,17 +107,19 @@ const getRepresentativeColorFromPly = (url: string): Promise<[number, number, nu
     );
   });
 
-function ThreeScene({ 
-  filters, 
-  containerRef, 
+function ThreeScene({
+  filters,
+  containerRef,
   pointCloudUrl,
-  modelFormat,
+  bimModelUrl,
+  viewMode,
   onBimSelect,
-}: { 
-  filters: FilterCategory[]; 
+}: {
+  filters: FilterCategory[];
   containerRef: React.RefObject<HTMLDivElement>;
   pointCloudUrl?: string;
-  modelFormat: 'ply' | 'obj';
+  bimModelUrl?: string;
+  viewMode: 'semantic' | 'instanced' | 'bim';
   onBimSelect?: (id: string | null) => void;
 }) {
   useEffect(() => {
@@ -125,59 +129,54 @@ function ThreeScene({
     const width = container.clientWidth;
     const height = container.clientHeight;
 
-    // Scene setup
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xfafafa);
 
-    // Camera setup
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
     camera.position.set(8, 6, 8);
     camera.lookAt(0, 0, 0);
 
-    // Renderer setup
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
     container.appendChild(renderer.domElement);
 
-    // Simple mouse controls
     let isDragging = false;
     let previousMousePosition = { x: 0, y: 0 };
-    
+
     const handleMouseDown = (e: MouseEvent) => {
       isDragging = true;
       previousMousePosition = { x: e.clientX, y: e.clientY };
     };
-    
+
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging) return;
-      
+
       const deltaX = e.clientX - previousMousePosition.x;
       const deltaY = e.clientY - previousMousePosition.y;
-      
+
       camera.position.x -= deltaX * 0.02;
       camera.position.y += deltaY * 0.02;
       camera.lookAt(0, 0, 0);
-      
+
       previousMousePosition = { x: e.clientX, y: e.clientY };
     };
-    
+
     const handleMouseUp = () => {
       isDragging = false;
     };
-    
+
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 1.1 : 0.9;
       camera.position.multiplyScalar(factor);
     };
-    
+
     renderer.domElement.addEventListener('mousedown', handleMouseDown);
     renderer.domElement.addEventListener('mousemove', handleMouseMove);
     renderer.domElement.addEventListener('mouseup', handleMouseUp);
     renderer.domElement.addEventListener('wheel', handleWheel);
 
-    // Lights
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     scene.add(ambientLight);
 
@@ -189,36 +188,50 @@ function ThreeScene({
     directionalLight2.position.set(-10, -10, -5);
     scene.add(directionalLight2);
 
-    // Grid helper
     const gridHelper = new THREE.GridHelper(20, 20, 0xcccccc, 0xe8e9eb);
     scene.add(gridHelper);
 
-    // Create room elements array (used for cleanup)
     const roomElements: THREE.Mesh[] = [];
+    const disposableMaterials = new Set<THREE.Material>();
+    const disposableGeometries = new Set<THREE.BufferGeometry>();
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
-    // If we have a point cloud URL, load and display it
-    if (pointCloudUrl && modelFormat === 'ply') {
+    const normalizedGroup = new THREE.Group();
+    const contentGroup = new THREE.Group();
+    normalizedGroup.add(contentGroup);
+    scene.add(normalizedGroup);
+
+    const fitContentToView = () => {
+      if (contentGroup.children.length === 0) {
+        return;
+      }
+
+      normalizedGroup.scale.setScalar(1);
+      contentGroup.position.set(0, 0, 0);
+      contentGroup.updateMatrixWorld(true);
+
+      const box = new THREE.Box3().setFromObject(contentGroup);
+      if (box.isEmpty()) {
+        return;
+      }
+
+      const center = new THREE.Vector3();
+      const size = new THREE.Vector3();
+      box.getCenter(center);
+      box.getSize(size);
+
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      contentGroup.position.set(-center.x, -center.y, -center.z);
+      normalizedGroup.scale.setScalar(5 / maxDim);
+      camera.position.set(8, 6, 8);
+      camera.lookAt(0, 0, 0);
+    };
+
+    if (pointCloudUrl) {
       const loader = new PLYLoader();
       loader.load(
         pointCloudUrl,
         (geometry) => {
-          // Center the geometry
-          geometry.computeBoundingBox();
-          const boundingBox = geometry.boundingBox;
-          if (boundingBox) {
-            const center = new THREE.Vector3();
-            boundingBox.getCenter(center);
-            geometry.translate(-center.x, -center.y, -center.z);
-            
-            // Scale to reasonable size
-            const size = new THREE.Vector3();
-            boundingBox.getSize(size);
-            const maxDim = Math.max(size.x, size.y, size.z);
-            const scale = 5 / maxDim;
-            geometry.scale(scale, scale, scale);
-          }
-
           const colorAttr = geometry.getAttribute('color');
           if (colorAttr) {
             const colorArray = colorAttr.array as ArrayLike<number>;
@@ -236,21 +249,21 @@ function ThreeScene({
               colorAttr.needsUpdate = true;
             }
           }
-          
-          // Create point cloud material
+
           const material = new THREE.PointsMaterial({
             size: 0.02,
             vertexColors: true,
-            sizeAttenuation: true
+            sizeAttenuation: true,
+            opacity: viewMode === 'bim' ? 0.45 : 1,
+            transparent: viewMode === 'bim',
           });
-          
-          // Create points object
+
           const points = new THREE.Points(geometry, material);
-          scene.add(points);
-          
-          // Adjust camera position based on point cloud
-          camera.position.set(8, 6, 8);
-          camera.lookAt(0, 0, 0);
+          points.renderOrder = 1;
+          contentGroup.add(points);
+          disposableGeometries.add(geometry);
+          disposableMaterials.add(material);
+          fitContentToView();
         },
         (progress) => {
           console.log('Loading point cloud:', (progress.loaded / progress.total * 100).toFixed(2) + '%');
@@ -259,22 +272,13 @@ function ThreeScene({
           console.error('Error loading point cloud:', error);
         }
       );
-    } else if (pointCloudUrl && modelFormat === 'obj') {
+    }
+
+    if (bimModelUrl) {
       const loader = new OBJLoader();
       loader.load(
-        pointCloudUrl,
+        bimModelUrl,
         (obj) => {
-          const box = new THREE.Box3().setFromObject(obj);
-          const center = new THREE.Vector3();
-          box.getCenter(center);
-          obj.position.sub(center);
-
-          const size = new THREE.Vector3();
-          box.getSize(size);
-          const maxDim = Math.max(size.x, size.y, size.z) || 1;
-          const scale = 5 / maxDim;
-          obj.scale.setScalar(scale);
-
           obj.traverse((child) => {
             if ((child as THREE.Mesh).isMesh) {
               const mesh = child as THREE.Mesh;
@@ -285,19 +289,27 @@ function ThreeScene({
               if (!mesh.material) {
                 mesh.material = new THREE.MeshStandardMaterial({ color: 0xbdbdbd });
               }
+              if (Array.isArray(mesh.material)) {
+                mesh.material.forEach((material) => disposableMaterials.add(material));
+              } else {
+                disposableMaterials.add(mesh.material);
+              }
+              disposableGeometries.add(mesh.geometry);
             }
           });
 
-          scene.add(obj);
-          camera.position.set(8, 6, 8);
-          camera.lookAt(0, 0, 0);
+          obj.renderOrder = 2;
+          contentGroup.add(obj);
+          fitContentToView();
         },
         undefined,
         (error) => {
           console.error('Error loading BIM OBJ:', error);
         }
       );
-    } else {
+    }
+
+    if (!pointCloudUrl && !bimModelUrl) {
       // Original room rendering code (only if no point cloud)
       const isEnabled = (category: string, item: string) => {
         const cat = filters.find(f => f.name === category);
@@ -421,7 +433,7 @@ function ThreeScene({
     animate();
 
     const handleClick = (e: MouseEvent) => {
-      if (modelFormat !== 'obj' || !onBimSelect) return;
+      if (viewMode !== 'bim' || !bimModelUrl || !onBimSelect) return;
       const rect = renderer.domElement.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -463,6 +475,8 @@ function ThreeScene({
         container.removeChild(renderer.domElement);
       }
       renderer.dispose();
+      disposableGeometries.forEach((geometry) => geometry.dispose());
+      disposableMaterials.forEach((material) => material.dispose());
       roomElements.forEach(mesh => {
         mesh.geometry.dispose();
         if (Array.isArray(mesh.material)) {
@@ -472,7 +486,7 @@ function ThreeScene({
         }
       });
     };
-  }, [filters, pointCloudUrl, modelFormat, containerRef, onBimSelect]);
+  }, [filters, pointCloudUrl, bimModelUrl, viewMode, containerRef, onBimSelect]);
 
   return null;
 }
@@ -483,6 +497,8 @@ export default function ModelViewer({
   onNavigateHome,
   onNavigateGetStarted,
   onNavigateLibrary,
+  authButtonLabel,
+  onAuthButtonClick,
   rawPointCloudUrl,
   semanticPointCloudUrl,
   instancedPointCloudUrl,
@@ -497,12 +513,14 @@ export default function ModelViewer({
   const availableTabs = [
     { key: 'semantic' as const, label: 'Semantic', url: semanticPointCloudUrl },
     { key: 'instanced' as const, label: 'Instantiated', url: instancedPointCloudUrl },
-    { key: 'bim' as const, label: 'BIM Model', url: bimModelUrl },
+    { key: 'bim' as const, label: 'Final Model', url: bimModelUrl || instancedPointCloudUrl },
   ].filter((tab) => Boolean(tab.url));
 
   const resolvedTab = availableTabs.find((tab) => tab.key === activeTab) || availableTabs[0];
-  const activePointCloudUrl = resolvedTab?.url;
-  const activeModelFormat = resolvedTab?.key === 'bim' ? 'obj' as const : 'ply' as const;
+  const activePointCloudUrl = resolvedTab?.key === 'bim'
+    ? instancedPointCloudUrl
+    : resolvedTab?.url;
+  const activeBimModelUrl = resolvedTab?.key === 'bim' ? bimModelUrl : undefined;
   
   const [filters, setFilters] = useState<FilterCategory[]>([
     {
@@ -616,7 +634,7 @@ export default function ModelViewer({
         return;
       }
 
-      if (resolvedTab?.key !== 'instanced' && resolvedTab?.key !== 'semantic') {
+      if (resolvedTab?.key !== 'instanced' && resolvedTab?.key !== 'semantic' && resolvedTab?.key !== 'bim') {
         setPointCloudLegend([]);
         return;
       }
@@ -706,6 +724,8 @@ export default function ModelViewer({
         onNavigateGetStarted={onNavigateGetStarted}
         onNavigateLibrary={onNavigateLibrary}
         activePage="library"
+        authButtonLabel={authButtonLabel}
+        onAuthButtonClick={onAuthButtonClick}
       />
 
       <div className="flex h-screen pt-[8.8vw]">
@@ -752,7 +772,7 @@ export default function ModelViewer({
             </h1>
           </div>
 
-          {activePointCloudUrl && resolvedTab?.key !== 'bim' && (
+          {activePointCloudUrl && (
             <div className="absolute top-[1.04vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
                 {resolvedTab?.key === 'semantic' ? 'Semantic Class Colors' : 'Point Cloud Colors'}
@@ -762,7 +782,9 @@ export default function ModelViewer({
                   ? (/\/all_instances_combined\.ply$/i.test(activePointCloudUrl)
                       ? 'Instanced class legend'
                       : 'Semantic class legend')
-                  : 'Instanced class legend'}
+                  : resolvedTab?.key === 'bim'
+                    ? 'Instanced cloud under BIM overlay'
+                    : 'Instanced class legend'}
               </p>
               <div className="grid grid-cols-2 gap-x-[1.04vw] gap-y-[0.42vw]">
                 {pointCloudLegend.map((item) => (
@@ -814,7 +836,8 @@ export default function ModelViewer({
               filters={filters}
               containerRef={canvasContainerRef}
               pointCloudUrl={activePointCloudUrl}
-              modelFormat={activeModelFormat}
+              bimModelUrl={activeBimModelUrl}
+              viewMode={resolvedTab?.key || 'semantic'}
               onBimSelect={resolvedTab?.key === 'bim' ? handleBimSelect : undefined}
             />
           </div>
