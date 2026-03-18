@@ -148,7 +148,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
 
   try {
     const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\val_best_miou.pth';
-    const vizInstScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'vizainst.py');
+    const vizInstScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'BACKEND', 'scan2bim', 'vizainst.py');
     const cloud2BimDir = process.env.CLOUD2BIM_DIR || 'C:\\Users\\iamsa\\Downloads\\Cloud2BIM-1.02\\Cloud2BIM-1.02';
     const json2IfcScriptPath = process.env.PYTHON_JSON2IFC_SCRIPT || path.join(cloud2BimDir, 'json2ifc.py');
     const ifcObjExporterScriptPath = process.env.PYTHON_IFC_EXPORTER_SCRIPT || path.join(__dirname, 'ifc_obj_exporter.py');
@@ -171,12 +171,12 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
 
     const runStart = Date.now();
     const result = await runPython(vizInstScriptPath, vizInstArgs);
-    console.log('[process-pointcloud] viz_inst.py duration (ms):', Date.now() - runStart);
+    console.log('[process-pointcloud] vizainst.py duration (ms):', Date.now() - runStart);
     if (result.stdout) {
-      console.log('[process-pointcloud] viz_inst.py stdout:\n' + result.stdout);
+      console.log('[process-pointcloud] vizainst.py stdout:\n' + result.stdout);
     }
     if (result.stderr) {
-      console.warn('[process-pointcloud] viz_inst.py stderr:\n' + result.stderr);
+      console.warn('[process-pointcloud] vizainst.py stderr:\n' + result.stderr);
     }
 
     const runDirMatch = result.stdout?.match(/Run output directory:\s*(.+)/i);
@@ -196,7 +196,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     if (!instancedPath) {
       res.status(500).json({
         success: false,
-        error: 'Missing all_instances_combined.ply after viz_inst.py processing',
+        error: 'Missing all_instances_combined.ply after vizainst.py processing',
       });
       return;
     }
@@ -272,7 +272,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Point cloud processed successfully via viz_inst.py pipeline',
+      message: 'Point cloud processed successfully via vizainst.py pipeline',
       outputUrl: instancedUrl,
       semanticUrl: instancedUrl,
       instancedUrl,
