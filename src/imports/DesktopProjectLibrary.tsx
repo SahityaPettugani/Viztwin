@@ -141,13 +141,17 @@ export default function DesktopProjectLibrary({
   onNavigateGetStarted,
   onNavigateLibrary,
   onOpenUpload,
-  projects = []
+  projects = [],
+  authButtonLabel,
+  onAuthButtonClick,
 }: {
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
   onNavigateLibrary: () => void;
   onOpenUpload: () => void;
   projects?: Project[];
+  authButtonLabel?: string;
+  onAuthButtonClick?: () => void;
 }) {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [selectedPointCloud, setSelectedPointCloud] = useState<{
@@ -316,6 +320,8 @@ export default function DesktopProjectLibrary({
         onNavigateGetStarted={onNavigateGetStarted}
         onNavigateLibrary={onNavigateLibrary}
         activePage="library"
+        authButtonLabel={authButtonLabel}
+        onAuthButtonClick={onAuthButtonClick}
       />
       
       {/* Bottom spacing */}

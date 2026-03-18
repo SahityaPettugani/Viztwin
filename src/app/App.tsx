@@ -1,4 +1,5 @@
-import { useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { Session, User } from '@supabase/supabase-js';
 import DesktopHomePage from '../imports/DesktopHomePage';
 import DesktopProjectLibrary from '../imports/DesktopProjectLibrary';
 import DesktopGetStarted from '../imports/DesktopGetStarted';
@@ -6,58 +7,105 @@ import OverlayUploadPage from '../imports/OverlayUploadPage';
 import OverlayFilePropertiesPopUp from '../imports/OverlayFilePropertiesPopUp';
 import OverlayUploadingPage from '../imports/OverlayUploadingPage';
 import OverlayUploadedPage from '../imports/OverlayUploadedPage';
+import AuthScreen from './components/AuthScreen';
+import {
+  createProject,
+  listProjects,
+  type ProcessPointCloudResult,
+  type Project,
+} from '../lib/projects';
+import { supabase, supabaseConfigError } from '../lib/supabase';
 
-const base64ToBlobUrl = (base64Data: string, mimeType = 'application/octet-stream') => {
-  const binary = atob(base64Data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  const blob = new Blob([bytes], { type: mimeType });
-  return URL.createObjectURL(blob);
-};
-
-interface Project {
-  id: string;
-  title: string;
-  date: string;
-  image: string;
-  pointCloudRawUrl?: string;
-  pointCloudSemanticUrl?: string;
-  pointCloudInstancedUrl?: string;
-  bimModelUrl?: string;
-  bimIfcUrl?: string;
-  bimPropsUrl?: string;
-  pointCloudFile?: File;
-}
-
-interface FormData {
+interface ProjectFormData {
   projectName: string;
   roomName: string;
   country: string;
   buildingType: string;
 }
 
+const emptyFormData: ProjectFormData = {
+  projectName: '',
+  roomName: '',
+  country: '',
+  buildingType: '',
+};
+
 export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [overlayState, setOverlayState] = useState<'none' | 'upload' | 'properties' | 'uploading' | 'uploaded'>('none');
   const [currentPage, setCurrentPage] = useState<'home' | 'library' | 'get-started'>('home');
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadedFileName, setUploadedFileName] = useState<string>('');
+  const [uploadedFileName, setUploadedFileName] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [uploadError, setUploadError] = useState<string>('');
-  const [formData, setFormData] = useState<FormData>({
-    projectName: '',
-    roomName: '',
-    country: '',
-    buildingType: ''
-  });
-  
-  // Ref to store abort controller for cancelling uploads
-  const uploadAbortController = useRef<AbortController | null>(null);
-  
-  // Processing state
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const [formData, setFormData] = useState<ProjectFormData>(emptyFormData);
   const [processingStage, setProcessingStage] = useState<'uploading' | 'processing' | 'complete'>('uploading');
+  const uploadAbortController = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!supabase) {
+      setAuthReady(true);
+      return;
+    }
+
+    const bootstrapSession = async () => {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) {
+        console.error('Failed to restore session:', error);
+      }
+      setSession(data.session ?? null);
+      setUser(data.session?.user ?? null);
+      setAuthReady(true);
+    };
+
+    bootstrapSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setUser(nextSession?.user ?? null);
+      setAuthReady(true);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const loadProjects = async () => {
+      if (!user) {
+        setProjects([]);
+        return;
+      }
+
+      setProjectsLoading(true);
+      try {
+        const savedProjects = await listProjects(user.id);
+        setProjects(savedProjects);
+      } catch (error) {
+        console.error('Failed to load projects:', error);
+        alert(`Failed to load saved projects: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      } finally {
+        setProjectsLoading(false);
+      }
+    };
+
+    loadProjects();
+  }, [user]);
+
+  const resetUploadState = () => {
+    setUploadProgress(0);
+    setUploadedFileName('');
+    setUploadedFile(null);
+    setUploadError('');
+    setFormData(emptyFormData);
+  };
 
   const handleOpenUpload = () => {
     setOverlayState('upload');
@@ -65,16 +113,7 @@ export default function App() {
 
   const handleCloseOverlay = () => {
     setOverlayState('none');
-    setUploadProgress(0);
-    setUploadedFileName('');
-    setUploadedFile(null);
-    setUploadError('');
-    setFormData({
-      projectName: '',
-      roomName: '',
-      country: '',
-      buildingType: ''
-    });
+    resetUploadState();
   };
 
   const handleFileSelect = (file: File) => {
@@ -87,127 +126,78 @@ export default function App() {
   };
 
   const handleStartUpload = async () => {
-    // Validate that we have a file
+    if (!user) {
+      alert('Please log in before uploading a project.');
+      return;
+    }
+
     if (!uploadedFile) {
       alert('Error: No file selected. Please select a .ply file.');
       return;
     }
-    
-    // Validate that all form fields are filled
+
     if (!formData.projectName || !formData.roomName || !formData.country || !formData.buildingType) {
       alert('Error: Please fill in all required fields (Project Name, Room Name, Country, and Building Type).');
       return;
     }
-    
-    console.log('Starting upload process...');
-    console.log('File:', uploadedFile.name, uploadedFile.size, 'bytes');
-    console.log('Form data:', formData);
-    
-    // Go directly to uploading state
+
     setOverlayState('uploading');
     setProcessingStage('uploading');
     setUploadProgress(0);
-    
-    // Create new AbortController for this upload
+    setUploadError('');
     uploadAbortController.current = new AbortController();
-    
+
     try {
-        const originalUrl = URL.createObjectURL(uploadedFile);
+      setUploadProgress(15);
+      setProcessingStage('processing');
 
-        setUploadProgress(15);
+      const processFormData = new FormData();
+      processFormData.append('file', uploadedFile);
 
-        // Step 1: Process the point cloud with Python (via Node backend)
-        console.log('Step 1: Processing point cloud with Python backend...');
-        setProcessingStage('processing');
+      const processResponse = await fetch('/api/process-pointcloud', {
+        method: 'POST',
+        body: processFormData,
+        signal: uploadAbortController.current.signal,
+      });
 
-        const processFormData = new FormData();
-        processFormData.append('file', uploadedFile);
+      let processResult: ProcessPointCloudResult = { success: false };
+      if (processResponse.ok) {
+        processResult = (await processResponse.json()) as ProcessPointCloudResult;
+      } else {
+        const errorData = await processResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Point cloud processing failed.');
+      }
 
-        const processResponse = await fetch('/api/process-pointcloud', {
-          method: 'POST',
-          body: processFormData,
-          signal: uploadAbortController.current.signal
-        });
+      setUploadProgress(75);
 
-        console.log('Process response status:', processResponse.status);
+      const savedProject = await createProject({
+        title: formData.projectName,
+        roomName: formData.roomName,
+        country: formData.country,
+        buildingType: formData.buildingType,
+        uploadedFile,
+        processResult,
+        user,
+      });
 
-        let semanticUrl: string | undefined;
-        let instancedUrl: string | undefined;
-        let bimModelUrl: string | undefined;
-        let bimIfcUrl: string | undefined;
-        let bimPropsUrl: string | undefined;
+      setProcessingStage('complete');
+      setUploadProgress(100);
+      setProjects((prev) => [savedProject, ...prev]);
 
-        if (processResponse.ok) {
-          const processResult = await processResponse.json();
-          console.log('Process result:', processResult);
-          if (processResult.semanticUrl) {
-            semanticUrl = processResult.semanticUrl;
-          } else if (processResult.semanticOutput) {
-            semanticUrl = base64ToBlobUrl(processResult.semanticOutput);
-          }
-
-          if (processResult.instancedUrl || processResult.outputUrl) {
-            instancedUrl = processResult.instancedUrl || processResult.outputUrl;
-          } else if (processResult.output) {
-            instancedUrl = base64ToBlobUrl(processResult.output);
-          }
-
-          bimModelUrl = processResult.bimObjUrl;
-          bimIfcUrl = processResult.bimIfcUrl;
-          bimPropsUrl = processResult.bimPropsUrl;
-        } else {
-          const errorData = await processResponse.json().catch(() => ({}));
-          console.warn('Processing failed, continuing with original file:', errorData);
-        }
-
-        if (!semanticUrl && instancedUrl) {
-          semanticUrl = instancedUrl;
-        }
-        if (semanticUrl && instancedUrl && semanticUrl === instancedUrl) {
-          instancedUrl = undefined;
-        }
-
-        setUploadProgress(85);
-        setProcessingStage('complete');
-
-        // Step 2: Save project data locally
-        const newProject: Project = {
-          id: globalThis.crypto?.randomUUID?.() || String(Date.now()),
-          title: formData.projectName,
-          date: new Date().toLocaleDateString('en-GB', {
-            day: '2-digit',
-            month: 'long',
-            year: 'numeric'
-          }),
-          image: '',
-          pointCloudRawUrl: originalUrl,
-          pointCloudSemanticUrl: semanticUrl,
-          pointCloudInstancedUrl: instancedUrl,
-          bimModelUrl,
-          bimIfcUrl,
-          bimPropsUrl,
-          pointCloudFile: undefined
-        };
-
-        console.log('Adding new project to state:', newProject);
-        setUploadProgress(100);
-        setProjects(prev => [newProject, ...prev]);
-      
-      // Show uploaded state after a short delay
       setTimeout(() => {
         setOverlayState('uploaded');
       }, 500);
-
     } catch (error) {
-      // Check if the error is due to abort
       if (error instanceof Error && error.name === 'AbortError') {
         console.log('Upload cancelled by user');
-        return; // Don't show error alert for user-initiated cancellation
+        return;
       }
-      
+
+      const message = error instanceof Error ? error.message : 'Unknown error';
       console.error('Upload error:', error);
-      alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setOverlayState('properties'); // Go back to properties form
+      setUploadError(message);
+      alert(`Upload failed: ${message}`);
+      setOverlayState('properties');
       setUploadProgress(0);
     } finally {
       uploadAbortController.current = null;
@@ -215,23 +205,19 @@ export default function App() {
   };
 
   const handleCancelUpload = () => {
-    // Abort the upload
     if (uploadAbortController.current) {
       uploadAbortController.current.abort();
       uploadAbortController.current = null;
     }
-    
-    // Reset state and close overlay
+
     setUploadProgress(0);
-    setOverlayState('properties'); // Go back to properties form
+    setOverlayState('properties');
   };
 
   const handleNavigateToLibrary = () => {
     setCurrentPage('library');
     setOverlayState('none');
-    setUploadProgress(0);
-    setUploadedFileName('');
-    setUploadedFile(null);
+    resetUploadState();
   };
 
   const handleNavigateToHome = () => {
@@ -242,62 +228,111 @@ export default function App() {
     setCurrentPage('get-started');
   };
 
+  const handleSignOut = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      alert(`Failed to sign out: ${error.message}`);
+      return;
+    }
+
+    setProjects([]);
+    setCurrentPage('home');
+    setOverlayState('none');
+    resetUploadState();
+  };
+
+  if (!authReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f5f5f5]">
+        <p className="font-['Satoshi_Variable:Medium',sans-serif] text-lg text-[#333333]">
+          Loading VizTwin...
+        </p>
+      </div>
+    );
+  }
+
+  if (supabaseConfigError || !supabase) {
+    return <AuthScreen />;
+  }
+
+  if (!session || !user) {
+    return <AuthScreen />;
+  }
+
+  const authButtonLabel = 'Sign out';
+
   return (
     <>
       {currentPage === 'home' && (
-        <DesktopHomePage 
+        <DesktopHomePage
           onNavigateHome={handleNavigateToHome}
           onNavigateGetStarted={handleNavigateToGetStarted}
           onNavigateLibrary={handleNavigateToLibrary}
           onOpenUpload={handleOpenUpload}
+          authButtonLabel={authButtonLabel}
+          onAuthButtonClick={handleSignOut}
         />
       )}
-      
+
       {currentPage === 'library' && (
-        <DesktopProjectLibrary 
+        <DesktopProjectLibrary
           onNavigateHome={handleNavigateToHome}
           onNavigateGetStarted={handleNavigateToGetStarted}
           onNavigateLibrary={handleNavigateToLibrary}
           onOpenUpload={handleOpenUpload}
           projects={projects}
+          authButtonLabel={authButtonLabel}
+          onAuthButtonClick={handleSignOut}
         />
       )}
-      
+
       {currentPage === 'get-started' && (
-        <DesktopGetStarted 
+        <DesktopGetStarted
           onNavigateHome={handleNavigateToHome}
           onNavigateGetStarted={handleNavigateToGetStarted}
           onNavigateLibrary={handleNavigateToLibrary}
           onOpenUpload={handleOpenUpload}
+          authButtonLabel={authButtonLabel}
+          onAuthButtonClick={handleSignOut}
         />
       )}
-      
-      {/* Overlay Modals */}
+
+      {projectsLoading && currentPage === 'library' ? (
+        <div className="fixed bottom-6 right-6 z-[80] rounded-full bg-[#000001] px-5 py-3 font-['Satoshi_Variable:Medium',sans-serif] text-sm text-white shadow-lg">
+          Loading saved projects...
+        </div>
+      ) : null}
+
       {overlayState !== 'none' && (
-        <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center" onClick={handleCloseOverlay}>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50" onClick={handleCloseOverlay}>
           {overlayState === 'upload' && (
-            <div className="relative scale-50" style={{ width: '571px', height: '682px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="relative scale-50" style={{ width: '571px', height: '682px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadPage onUploadClick={handleShowProperties} onFileSelect={handleFileSelect} />
             </div>
           )}
           {overlayState === 'properties' && (
-            <div className="relative scale-50" style={{ width: '955px', height: '680px' }} onClick={(e) => e.stopPropagation()}>
-              <OverlayFilePropertiesPopUp 
+            <div className="relative scale-50" style={{ width: '955px', height: '680px' }} onClick={(event) => event.stopPropagation()}>
+              <OverlayFilePropertiesPopUp
                 formData={formData}
                 onChange={setFormData}
                 onUpload={handleStartUpload}
                 onCancel={handleCancelUpload}
               />
-              <div className="absolute left-[850px] top-[45px] w-[50px] h-[50px] cursor-pointer z-10" onClick={handleCloseOverlay} />
+              <div className="absolute left-[850px] top-[45px] h-[50px] w-[50px] cursor-pointer z-10" onClick={handleCloseOverlay} />
+              {uploadError ? (
+                <div className="absolute bottom-[35px] left-[55px] max-w-[845px] rounded-[10px] bg-[#fff1f1] px-4 py-3 font-['Satoshi_Variable:Medium',sans-serif] text-[14px] text-[#b42318]">
+                  {uploadError}
+                </div>
+              ) : null}
             </div>
           )}
           {overlayState === 'uploading' && (
-            <div className="relative scale-50" style={{ width: '469px', height: '800px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="relative scale-50" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadingPage progress={uploadProgress} fileName={uploadedFileName} onCancel={handleCancelUpload} stage={processingStage} />
             </div>
           )}
           {overlayState === 'uploaded' && (
-            <div className="relative scale-50" style={{ width: '469px', height: '800px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="relative scale-50" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadedPage onClose={handleNavigateToLibrary} fileName={uploadedFileName} />
             </div>
           )}

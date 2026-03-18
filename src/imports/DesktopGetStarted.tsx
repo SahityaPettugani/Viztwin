@@ -58,12 +58,16 @@ export default function DesktopGetStarted({
   onNavigateHome,
   onNavigateGetStarted,
   onNavigateLibrary,
-  onOpenUpload
+  onOpenUpload,
+  authButtonLabel,
+  onAuthButtonClick,
 }: {
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
   onNavigateLibrary: () => void;
   onOpenUpload: () => void;
+  authButtonLabel?: string;
+  onAuthButtonClick?: () => void;
 }) {
   return (
     <div className="bg-white relative w-full min-h-screen overflow-x-hidden" data-name="Desktop -Get Started">
@@ -91,6 +95,8 @@ export default function DesktopGetStarted({
         onNavigateGetStarted={onNavigateGetStarted}
         onNavigateLibrary={onNavigateLibrary}
         activePage="get-started"
+        authButtonLabel={authButtonLabel}
+        onAuthButtonClick={onAuthButtonClick}
       />
       
       {/* Bottom spacing */}
