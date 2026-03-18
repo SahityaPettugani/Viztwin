@@ -14,7 +14,6 @@ interface ModelViewerProps {
   authButtonLabel?: string;
   onAuthButtonClick?: () => void;
   rawPointCloudUrl?: string;
-  semanticPointCloudUrl?: string;
   instancedPointCloudUrl?: string;
   bimModelUrl?: string;
   bimIfcUrl?: string;
@@ -49,17 +48,6 @@ interface LegendItem {
   name: string;
   color: string;
 }
-
-const semanticLegend: LegendItem[] = [
-  { name: 'Ceiling', color: 'rgb(31, 119, 180)' },
-  { name: 'Floor', color: 'rgb(174, 199, 232)' },
-  { name: 'Wall', color: 'rgb(255, 127, 14)' },
-  { name: 'Beam', color: 'rgb(255, 187, 120)' },
-  { name: 'Column', color: 'rgb(44, 160, 44)' },
-  { name: 'Window', color: 'rgb(152, 223, 138)' },
-  { name: 'Door', color: 'rgb(214, 39, 40)' },
-  { name: 'Unassigned', color: 'rgb(255, 152, 150)' },
-];
 
 const classOrder = ['ceiling', 'floor', 'wall', 'beam', 'column', 'window', 'door', 'unassigned'];
 
@@ -119,7 +107,7 @@ function ThreeScene({
   containerRef: React.RefObject<HTMLDivElement>;
   pointCloudUrl?: string;
   bimModelUrl?: string;
-  viewMode: 'semantic' | 'instanced' | 'bim';
+  viewMode: 'instanced' | 'bim';
   onBimSelect?: (id: string | null) => void;
 }) {
   useEffect(() => {
@@ -500,7 +488,6 @@ export default function ModelViewer({
   authButtonLabel,
   onAuthButtonClick,
   rawPointCloudUrl,
-  semanticPointCloudUrl,
   instancedPointCloudUrl,
   bimModelUrl,
   bimIfcUrl: _bimIfcUrl,
@@ -508,17 +495,16 @@ export default function ModelViewer({
 }: ModelViewerProps) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
 
-  const [activeTab, setActiveTab] = useState<'semantic' | 'instanced' | 'bim'>('semantic');
+  const [activeTab, setActiveTab] = useState<'instanced' | 'bim'>('instanced');
 
   const availableTabs = [
-    { key: 'semantic' as const, label: 'Semantic', url: semanticPointCloudUrl },
     { key: 'instanced' as const, label: 'Instantiated', url: instancedPointCloudUrl },
-    { key: 'bim' as const, label: 'Final Model', url: bimModelUrl || instancedPointCloudUrl },
+    { key: 'bim' as const, label: 'Final Model', url: bimModelUrl },
   ].filter((tab) => Boolean(tab.url));
 
   const resolvedTab = availableTabs.find((tab) => tab.key === activeTab) || availableTabs[0];
   const activePointCloudUrl = resolvedTab?.key === 'bim'
-    ? instancedPointCloudUrl
+    ? undefined
     : resolvedTab?.url;
   const activeBimModelUrl = resolvedTab?.key === 'bim' ? bimModelUrl : undefined;
   
@@ -629,12 +615,7 @@ export default function ModelViewer({
 
       const isInstancedCombined = /\/all_instances_combined\.ply$/i.test(activePointCloudUrl);
 
-      if (resolvedTab?.key === 'semantic' && !isInstancedCombined) {
-        setPointCloudLegend(semanticLegend);
-        return;
-      }
-
-      if (resolvedTab?.key !== 'instanced' && resolvedTab?.key !== 'semantic' && resolvedTab?.key !== 'bim') {
+      if (resolvedTab?.key !== 'instanced' && resolvedTab?.key !== 'bim') {
         setPointCloudLegend([]);
         return;
       }
@@ -775,14 +756,10 @@ export default function ModelViewer({
           {activePointCloudUrl && (
             <div className="absolute top-[1.04vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
-                {resolvedTab?.key === 'semantic' ? 'Semantic Class Colors' : 'Point Cloud Colors'}
+                Point Cloud Colors
               </p>
               <p className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.68vw] text-[#666666] mb-[0.52vw]">
-                {resolvedTab?.key === 'semantic'
-                  ? (/\/all_instances_combined\.ply$/i.test(activePointCloudUrl)
-                      ? 'Instanced class legend'
-                      : 'Semantic class legend')
-                  : resolvedTab?.key === 'bim'
+                {resolvedTab?.key === 'bim'
                     ? 'Instanced cloud under BIM overlay'
                     : 'Instanced class legend'}
               </p>
@@ -837,7 +814,7 @@ export default function ModelViewer({
               containerRef={canvasContainerRef}
               pointCloudUrl={activePointCloudUrl}
               bimModelUrl={activeBimModelUrl}
-              viewMode={resolvedTab?.key || 'semantic'}
+              viewMode={resolvedTab?.key || 'instanced'}
               onBimSelect={resolvedTab?.key === 'bim' ? handleBimSelect : undefined}
             />
           </div>
@@ -920,4 +897,3 @@ export default function ModelViewer({
     </div>
   );
 }
-
