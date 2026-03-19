@@ -428,7 +428,7 @@ def instantiate_planar_iterative(pcd, class_name, dist_thresh=0.20, min_points=5
         print(f"  Found instance {len(instances)}: {len(inliers)} points. Remaining: {len(remaining_pcd.points)}")
         
     return instances
-
+'''
 def extract_bim_parameters(instances_dict):
     """
     Calculates BIM-ready parameters (Length, Height, Thickness, Centerline) 
@@ -487,7 +487,65 @@ def extract_bim_parameters(instances_dict):
             bim_data.append(bim_obj)
             
     return bim_data
+'''
+def extract_bim_parameters(instances_dict):
+    """
+    Calculates BIM-ready parameters (Length, Height, Thickness, Centerline) 
+    for each wall instance.
+    """
+    bim_data = []
+    
+    for class_name, pcd_list in instances_dict.items():
+        for idx, pcd in enumerate(pcd_list):
+            pts = np.asarray(pcd.points)
+            if len(pts) < 50: continue
+            x_min, x_max = pts[:, 0].min(), pts[:, 0].max()
+            y_min, y_max = pts[:, 1].min(), pts[:, 1].max()
+            z_min, z_max = pts[:, 2].min(), pts[:, 2].max()
+            height = z_max - z_min
+            thickness = 0.2
+            bim_obj = {
+                        "id": f"{class_name}_{idx}",
+                        "type": class_name,
+                        "height": float(height), 
+                        "thickness": float(thickness), 
+                        "geometry": {
+                            "start_x": float(x_min), "start_y": float(y_min), "start_z": float(z_min),
+                            "end_x": float(x_max), "end_y": float(y_max), "end_z": float(z_min)
+                        }
+                    }
 
+            if class_name == "floor":
+                bim_obj["geometry"]["start_z"] = float(z_min)
+                bim_obj["geometry"]["end_z"] = float(z_min)
+            elif class_name == "ceiling":
+                bim_obj["geometry"]["start_z"] = float(z_min/2)
+                bim_obj["geometry"]["end_z"] = float(z_min/2)
+            else:
+                xy_pts = pts[:, :2]
+                from sklearn.decomposition import PCA
+                pca = PCA(n_components=2)
+                pca.fit(xy_pts)
+                
+                direction = pca.components_[0] 
+                center = xy_pts.mean(axis=0)
+                
+                projected = xy_pts @ direction
+                p_min, p_max = projected.min(), projected.max()
+                
+                start_pt = center + direction * (p_min - projected.mean())
+                end_pt = center + direction * (p_max - projected.mean())
+                
+                bim_obj["geometry"]["start_x"] = float(start_pt[0])
+                bim_obj["geometry"]["end_x"] = float(end_pt[0])
+                bim_obj["geometry"]["start_y"] = float(start_pt[1])
+                bim_obj["geometry"]["end_y"] = float(end_pt[1])
+                bim_obj["geometry"]["start_z"] = float(z_min)
+                bim_obj["geometry"]["end_z"] = float(z_min)
+                    
+            bim_data.append(bim_obj)
+            
+    return bim_data
 def main(
     input_file,
     output_dir="output_instances",

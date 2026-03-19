@@ -22,7 +22,19 @@ interface ModelViewerProps {
 
 interface FilterCategory {
   name: string;
-  items: { name: string; enabled: boolean }[];
+  items: { id: string; name: string; enabled: boolean }[];
+}
+
+interface LayerDisplayItem {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+interface GroupedFilterCategory {
+  type: string;
+  name: string;
+  items: string[];
 }
 
 interface SelectedElement {
@@ -35,13 +47,14 @@ interface SelectedElement {
 
 interface BimElementProps {
   id: string;
-  className: string;
-  name: string;
-  dimensions: {
+  className?: string;
+  name?: string;
+  dimensions?: {
     x: number;
     y: number;
     z: number;
   };
+  type?: string;
 }
 
 interface LegendItem {
@@ -50,6 +63,116 @@ interface LegendItem {
 }
 
 const classOrder = ['ceiling', 'floor', 'wall', 'beam', 'column', 'window', 'door', 'unassigned'];
+const DEFAULT_FILTERS: FilterCategory[] = [
+  {
+    name: 'Structure',
+    items: [
+      { id: 'Walls', name: 'Walls', enabled: true },
+      { id: 'Ceilings', name: 'Ceilings', enabled: true },
+      { id: 'Floors', name: 'Floors', enabled: true },
+      { id: 'Columns', name: 'Columns', enabled: true },
+      { id: 'Beams', name: 'Beams', enabled: true },
+    ],
+  },
+  {
+    name: 'Architecture',
+    items: [
+      { id: 'Windows', name: 'Windows', enabled: true },
+      { id: 'Doors', name: 'Doors', enabled: true },
+      { id: 'Stairs', name: 'Stairs', enabled: false },
+    ],
+  },
+];
+
+const prettyTypeLabel = (type: string) => {
+  const normalized = type.toLowerCase();
+  if (normalized === 'unassigned') return 'Other';
+  return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`;
+};
+
+const toCategoryName = (type: string) => {
+  const pretty = prettyTypeLabel(type);
+  if (type.toLowerCase() === 'unassigned') return 'Other';
+  return pretty.endsWith('s') ? pretty : `${pretty}s`;
+};
+
+const inferElementType = (value: string) => {
+  const normalized = (value || '').toLowerCase();
+  if (normalized.includes('wall')) return 'wall';
+  if (normalized.includes('floor')) return 'floor';
+  if (normalized.includes('ceiling')) return 'ceiling';
+  if (normalized.includes('column')) return 'column';
+  if (normalized.includes('beam')) return 'beam';
+  if (normalized.includes('window')) return 'window';
+  if (normalized.includes('door')) return 'door';
+  if (normalized.includes('stair')) return 'stair';
+  return 'unassigned';
+};
+
+const getDimensionsFromGeometry = (geometry?: { [key: string]: number } | null) => {
+  if (!geometry) return undefined;
+
+  const keys = ['start_x', 'start_y', 'start_z', 'end_x', 'end_y', 'end_z'] as const;
+  if (!keys.every((key) => Object.hasOwn(geometry, key) && Number.isFinite(Number(geometry[key])))) {
+    return undefined;
+  }
+
+  return {
+    x: Math.abs(Number(geometry.end_x) - Number(geometry.start_x)),
+    y: Math.abs(Number(geometry.end_y) - Number(geometry.start_y)),
+    z: Math.abs(Number(geometry.end_z) - Number(geometry.start_z)),
+  };
+};
+
+const buildFiltersFromBimProps = (propsById: Record<string, BimElementProps>) => {
+  const grouped: Record<string, GroupedFilterCategory> = {};
+
+  Object.entries(propsById).forEach(([id, element]) => {
+    const type = inferElementType(element.className || element.type || id);
+    if (!grouped[type]) {
+      grouped[type] = {
+        type,
+        name: toCategoryName(type),
+        items: [],
+      };
+    }
+
+    grouped[type].items.push(id);
+  });
+
+  const categories: GroupedFilterCategory[] = [];
+  const appended = new Set<string>();
+  classOrder.forEach((type) => {
+    if (grouped[type]) {
+      categories.push(grouped[type]);
+      appended.add(type);
+    }
+  });
+
+  Object.entries(grouped).forEach(([type, category]) => {
+    if (!appended.has(type)) {
+      categories.push(category);
+      appended.add(type);
+    }
+  });
+
+  return categories.map((category) => {
+    const sortedIds = category.items.sort((a, b) => a.localeCompare(b));
+    const layerItems: LayerDisplayItem[] = sortedIds.map((id, index) => {
+      const count = index + 1;
+      return {
+        id,
+        name: `${category.type}${count}`,
+        enabled: true,
+      };
+    });
+
+    return {
+      ...category,
+      items: layerItems,
+    };
+  });
+};
 
 const toLabel = (name: string) => name.charAt(0).toUpperCase() + name.slice(1);
 
@@ -101,6 +224,7 @@ function ThreeScene({
   pointCloudUrl,
   bimModelUrl,
   viewMode,
+  elementVisibility,
   onBimSelect,
 }: {
   filters: FilterCategory[];
@@ -108,8 +232,11 @@ function ThreeScene({
   pointCloudUrl?: string;
   bimModelUrl?: string;
   viewMode: 'instanced' | 'bim';
+  elementVisibility?: Record<string, boolean>;
   onBimSelect?: (id: string | null) => void;
 }) {
+  const sceneRef = useRef<THREE.Scene | null>(null);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -118,6 +245,7 @@ function ThreeScene({
     const height = container.clientHeight;
 
     const scene = new THREE.Scene();
+    sceneRef.current = scene;
     scene.background = new THREE.Color(0xfafafa);
 
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
@@ -271,9 +399,12 @@ function ThreeScene({
             if ((child as THREE.Mesh).isMesh) {
               const mesh = child as THREE.Mesh;
               const sourceName = mesh.name || mesh.parent?.name || '';
-              if (sourceName) {
-                mesh.userData.bimId = sourceName;
-              }
+              const resolvedElementId = sourceName || `mesh_${obj.name || roomElements.length}`;
+              mesh.userData.bimId = resolvedElementId;
+              mesh.userData.bimClass = inferElementType(sourceName || mesh.name || mesh.parent?.name || '');
+              mesh.visible = !(elementVisibility && resolvedElementId in elementVisibility)
+                ? true
+                : !!elementVisibility[resolvedElementId];
               if (!mesh.material) {
                 mesh.material = new THREE.MeshStandardMaterial({ color: 0xbdbdbd });
               }
@@ -467,14 +598,32 @@ function ThreeScene({
       disposableMaterials.forEach((material) => material.dispose());
       roomElements.forEach(mesh => {
         mesh.geometry.dispose();
-        if (Array.isArray(mesh.material)) {
+      if (Array.isArray(mesh.material)) {
           mesh.material.forEach(m => m.dispose());
         } else {
           mesh.material.dispose();
         }
       });
+      sceneRef.current = null;
     };
-  }, [filters, pointCloudUrl, bimModelUrl, viewMode, containerRef, onBimSelect]);
+  }, [filters, pointCloudUrl, bimModelUrl, viewMode, containerRef, onBimSelect, elementVisibility]);
+
+  useEffect(() => {
+    if (!bimModelUrl || !elementVisibility || !sceneRef.current) {
+      return;
+    }
+
+    sceneRef.current.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh?.isMesh || !mesh.userData?.bimId) {
+        return;
+      }
+      const elementId = String(mesh.userData.bimId);
+      if (Object.hasOwn(elementVisibility, elementId)) {
+        mesh.visible = !!elementVisibility[elementId];
+      }
+    });
+  }, [bimModelUrl, elementVisibility]);
 
   return null;
 }
@@ -508,52 +657,170 @@ export default function ModelViewer({
     : resolvedTab?.url;
   const activeBimModelUrl = resolvedTab?.key === 'bim' ? bimModelUrl : undefined;
   
-  const [filters, setFilters] = useState<FilterCategory[]>([
-    {
-      name: 'Structure',
-      items: [
-        { name: 'Walls', enabled: true },
-        { name: 'Ceilings', enabled: true },
-        { name: 'Floors', enabled: true },
-        { name: 'Columns', enabled: true },
-        { name: 'Beams', enabled: true },
-      ]
-    },
-    {
-      name: 'Architecture',
-      items: [
-        { name: 'Windows', enabled: true },
-        { name: 'Doors', enabled: true },
-        { name: 'Stairs', enabled: false },
-      ]
-    }
-  ]);
+  const [filters, setFilters] = useState<FilterCategory[]>(DEFAULT_FILTERS);
 
   const [selectedElement, setSelectedElement] = useState<SelectedElement | null>(null);
   const [bimPropsById, setBimPropsById] = useState<Record<string, BimElementProps>>({});
   const [pointCloudLegend, setPointCloudLegend] = useState<LegendItem[]>([]);
+  const [elementVisibility, setElementVisibility] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
 
     const loadBimProps = async () => {
       if (!bimPropsUrl) {
+        let loadedFromFallback = false;
+        if (bimModelUrl) {
+          const fallbackBimDataUrl = bimModelUrl.replace(/[^/]+$/, 'bim_reconstruction_data.json');
+          try {
+            const fallbackResponse = await fetch(fallbackBimDataUrl);
+            if (fallbackResponse.ok) {
+              const fallbackData = await fallbackResponse.json() as unknown;
+              const parsed: Record<string, BimElementProps> = {};
+              if (Array.isArray(fallbackData)) {
+                fallbackData.forEach((rawItem, index) => {
+                  if (!rawItem || typeof rawItem !== 'object') {
+                    return;
+                  }
+                  const item = rawItem as Record<string, unknown>;
+                  const id = typeof item.id === 'string' && item.id.trim().length > 0
+                    ? item.id
+                    : `element_${index}`;
+                  const inferredType = inferElementType((item.type as string) || (item.className as string) || item.id || id);
+                  parsed[id] = {
+                    id,
+                    className: typeof item.type === 'string' ? item.type : inferredType,
+                    name: typeof item.name === 'string' ? item.name : id,
+                    dimensions: typeof item.geometry === 'object'
+                      ? getDimensionsFromGeometry(item.geometry as Record<string, number>)
+                      : undefined,
+                    type: inferredType,
+                  };
+                });
+              } else if (fallbackData && typeof fallbackData === 'object') {
+                Object.entries(fallbackData).forEach(([id, rawItem]) => {
+                  if (!rawItem || typeof rawItem !== 'object') {
+                    return;
+                  }
+                  const item = rawItem as Record<string, unknown>;
+                  const inferredType = inferElementType((item.type as string) || (item.className as string) || id);
+                  parsed[id] = {
+                    id,
+                    className: typeof item.type === 'string' ? item.type : inferredType,
+                    name: typeof item.name === 'string' ? item.name : id,
+                    dimensions: (item.geometry && typeof item.geometry === 'object')
+                      ? getDimensionsFromGeometry(item.geometry as Record<string, number>)
+                      : undefined,
+                    type: inferredType,
+                  };
+                });
+              }
+
+              if (!cancelled) {
+                setBimPropsById(parsed);
+                const nextFilters = buildFiltersFromBimProps(parsed);
+                if (nextFilters.length > 0) {
+                  setFilters(nextFilters);
+                  setElementVisibility(
+                    Object.fromEntries(nextFilters.flatMap((category) =>
+                      category.items.map((item) => [item.id, item.enabled])
+                    )) as Record<string, boolean>
+                  );
+                } else {
+                  setFilters(DEFAULT_FILTERS);
+                  setElementVisibility({});
+                }
+                loadedFromFallback = true;
+              }
+            }
+          } catch {
+            // fallback data unavailable
+          }
+        }
+        if (loadedFromFallback) {
+          return;
+        }
         setBimPropsById({});
+        setFilters(DEFAULT_FILTERS);
+        setElementVisibility({});
         return;
       }
       try {
         const response = await fetch(bimPropsUrl);
         if (!response.ok) {
           setBimPropsById({});
+          setFilters(DEFAULT_FILTERS);
+          setElementVisibility({});
           return;
         }
-        const data = await response.json() as Record<string, BimElementProps>;
+        const data = await response.json() as unknown;
+
+        const parsed: Record<string, BimElementProps> = {};
+        if (Array.isArray(data)) {
+          data.forEach((rawItem, index) => {
+            if (!rawItem || typeof rawItem !== 'object') {
+              return;
+            }
+            const item = rawItem as Record<string, unknown>;
+            const id = typeof item.id === 'string' && item.id.trim().length > 0
+              ? item.id
+              : `element_${index}`;
+            parsed[id] = {
+              id,
+              className: typeof item.className === 'string'
+                ? item.className
+                : typeof item.type === 'string'
+                  ? item.type
+                  : inferElementType(id),
+              name: typeof item.name === 'string' ? item.name : id,
+              dimensions: typeof item.geometry === 'object'
+                ? getDimensionsFromGeometry(item.geometry as Record<string, number>)
+                : undefined,
+              type: typeof item.type === 'string' ? item.type : undefined,
+            };
+          });
+        } else if (data && typeof data === 'object') {
+          Object.entries(data).forEach(([id, rawItem]) => {
+            if (!rawItem || typeof rawItem !== 'object') {
+              return;
+            }
+            const item = rawItem as Record<string, unknown>;
+            parsed[id] = {
+              id,
+              className: typeof item.className === 'string' ? item.className : inferElementType(id),
+              name: typeof item.name === 'string' ? item.name : id,
+              dimensions: (item.dimensions && typeof item.dimensions === 'object')
+                ? {
+                    x: Number(item.dimensions.x),
+                    y: Number(item.dimensions.y),
+                    z: Number(item.dimensions.z),
+                  }
+                : undefined,
+              type: typeof item.className === 'string' ? item.className : undefined,
+            };
+          });
+        }
+
         if (!cancelled) {
-          setBimPropsById(data);
+          setBimPropsById(parsed);
+          const nextFilters = buildFiltersFromBimProps(parsed);
+          if (nextFilters.length > 0) {
+            setFilters(nextFilters);
+            setElementVisibility(
+              Object.fromEntries(nextFilters.flatMap((category) =>
+                category.items.map((item) => [item.id, item.enabled])
+              )) as Record<string, boolean>
+            );
+          } else {
+            setFilters(DEFAULT_FILTERS);
+            setElementVisibility({});
+          }
         }
       } catch {
         if (!cancelled) {
           setBimPropsById({});
+          setFilters(DEFAULT_FILTERS);
+          setElementVisibility({});
         }
       }
     };
@@ -562,7 +829,7 @@ export default function ModelViewer({
     return () => {
       cancelled = true;
     };
-  }, [bimPropsUrl]);
+  }, [bimPropsUrl, bimModelUrl]);
 
   const handleBimSelect = useCallback((id: string | null) => {
     if (!id) {
@@ -581,19 +848,20 @@ export default function ModelViewer({
       return;
     }
 
-    const fmt = (v: number) => `${v.toFixed(2)} m`;
+    const fmt = (v?: number) => (v === undefined ? 'N/A' : `${v.toFixed(2)} m`);
+    const dims = info.dimensions;
     setSelectedElement({
-      type: info.className,
+      type: info.className || 'Unknown',
       elementId: info.id,
       material: 'N/A',
-      dimensions: `${fmt(info.dimensions.x)} x ${fmt(info.dimensions.y)} x ${fmt(info.dimensions.z)}`,
+      dimensions: `${fmt(dims?.x)} x ${fmt(dims?.y)} x ${fmt(dims?.z)}`,
       properties: [
-        { label: 'Class', value: info.className },
+        { label: 'Class', value: info.className || 'Unknown' },
         { label: 'Name', value: info.name || '-' },
         { label: 'ID', value: info.id },
-        { label: 'Size X', value: fmt(info.dimensions.x) },
-        { label: 'Size Y', value: fmt(info.dimensions.y) },
-        { label: 'Size Z', value: fmt(info.dimensions.z) },
+        { label: 'Size X', value: fmt(dims?.x) },
+        { label: 'Size Y', value: fmt(dims?.y) },
+        { label: 'Size Z', value: fmt(dims?.z) },
       ],
     });
   }, [bimPropsById]);
@@ -684,13 +952,21 @@ export default function ModelViewer({
   }, [activePointCloudUrl, resolvedTab?.key]);
 
   const toggleFilter = (categoryName: string, itemName: string) => {
-    setFilters(prev => prev.map(category => {
+    setFilters((prev) => prev.map(category => {
       if (category.name === categoryName) {
+        const updatedItems = category.items.map(item =>
+          item.id === itemName ? { ...item, enabled: !item.enabled } : item
+        );
+        const matchedItem = updatedItems.find(item => item.id === itemName);
+        if (matchedItem) {
+          setElementVisibility((current) => ({
+            ...current,
+            [itemName]: matchedItem.enabled,
+          }));
+        }
         return {
           ...category,
-          items: category.items.map(item =>
-            item.name === itemName ? { ...item, enabled: !item.enabled } : item
-          )
+          items: updatedItems,
         };
       }
       return category;
@@ -720,18 +996,18 @@ export default function ModelViewer({
               </button>
             </div>
 
-            {filters.map((category) => (
-              <div key={category.name} className="mb-[1.56vw]">
+                {filters.map((category) => (
+                  <div key={category.name} className="mb-[1.56vw]">
                 <h3 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001] mb-[0.52vw]">
                   {category.name}
                 </h3>
                 <div className="space-y-[0.52vw]">
-                  {category.items.map((item) => (
-                    <label key={item.name} className="flex items-center gap-[0.52vw] cursor-pointer hover:bg-[#e8e9eb] p-[0.52vw] rounded-[0.52vw] transition-colors">
+                    {category.items.map((item) => (
+                    <label key={item.id} className="flex items-center gap-[0.52vw] cursor-pointer hover:bg-[#e8e9eb] p-[0.52vw] rounded-[0.52vw] transition-colors">
                       <input
                         type="checkbox"
                         checked={item.enabled}
-                        onChange={() => toggleFilter(category.name, item.name)}
+                        onChange={() => toggleFilter(category.name, item.id)}
                         className="w-[1.04vw] h-[1.04vw] accent-[#91f9d0]"
                       />
                       <span className="font-['Satoshi_Variable:Medium',sans-serif] text-[0.94vw] text-[#000001]">
@@ -814,6 +1090,7 @@ export default function ModelViewer({
               containerRef={canvasContainerRef}
               pointCloudUrl={activePointCloudUrl}
               bimModelUrl={activeBimModelUrl}
+              elementVisibility={elementVisibility}
               viewMode={resolvedTab?.key || 'instanced'}
               onBimSelect={resolvedTab?.key === 'bim' ? handleBimSelect : undefined}
             />
