@@ -100,6 +100,10 @@ const runPython = (scriptPath, args, options = {}) => {
     const child = spawn(pythonExec, fullArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: options.cwd,
+      env: {
+        ...process.env,
+        ...(options.env || {}),
+      },
     });
 
     let stdout = '';
@@ -152,6 +156,7 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     const cloud2BimDir = process.env.CLOUD2BIM_DIR || 'C:\\Users\\iamsa\\Downloads\\Cloud2BIM-1.02\\Cloud2BIM-1.02';
     const json2IfcScriptPath = process.env.PYTHON_JSON2IFC_SCRIPT || path.join(cloud2BimDir, 'json2ifc.py');
     const ifcObjExporterScriptPath = process.env.PYTHON_IFC_EXPORTER_SCRIPT || path.join(__dirname, 'ifc_obj_exporter.py');
+    const enableBimPreview = process.env.ENABLE_BIM_PREVIEW !== '0';
     const safeStem = path.parse(inputPath).name.replace(/[^a-zA-Z0-9._-]/g, '_');
     const requestOutputDir = path.join(outputsDir, `${Date.now()}_${safeStem}`);
     await fs.mkdir(requestOutputDir, { recursive: true });
@@ -162,7 +167,8 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       '--checkpoint',
       checkpointPath,
       '--output_dir',
-      requestOutputDir
+      requestOutputDir,
+      '--no-vis-instances'
     ];
 
     if (process.env.PYTHON_CPU === '1') {
@@ -170,7 +176,12 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     }
 
     const runStart = Date.now();
-    const result = await runPython(vizInstScriptPath, vizInstArgs);
+    console.log('[process-pointcloud] Python script:', vizInstScriptPath);
+    const result = await runPython(vizInstScriptPath, vizInstArgs, {
+      env: {
+        DISABLE_OPEN3D_VISUALIZER: '1',
+      },
+    });
     console.log('[process-pointcloud] vizainst.py duration (ms):', Date.now() - runStart);
     if (result.stdout) {
       console.log('[process-pointcloud] vizainst.py stdout:\n' + result.stdout);
@@ -214,13 +225,14 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
     let bimObjUrl;
     let bimPropsUrl;
 
-    if (hasBimJson) {
+    if (hasBimJson && enableBimPreview) {
       try {
         const json2IfcArgs = [
           '--input_json',
           bimJsonPath,
           '--output_ifc',
           bimIfcPath,
+          '--no-view-ifc',
         ];
         const ifcResult = await runPython(json2IfcScriptPath, json2IfcArgs, { cwd: cloud2BimDir });
         if (ifcResult.stdout) {
@@ -261,6 +273,8 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       } catch (bimError) {
         console.warn('[process-pointcloud] BIM conversion failed:', bimError?.message || bimError);
       }
+    } else if (hasBimJson) {
+      console.log('[process-pointcloud] Skipping Cloud2BIM IFC/OBJ conversion because ENABLE_BIM_PREVIEW=0');
     } else {
       console.warn('[process-pointcloud] Missing bim_reconstruction_data.json at', bimJsonPath);
     }
