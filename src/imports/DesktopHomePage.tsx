@@ -1,10 +1,10 @@
 import svgPaths from "./svg-1pmfq9k36w";
 import imgVtLogoBig from "../assets/73a2f32f7019198ed482514e10b99691f65a78a1.png";
-import imgTurntablePointCloud1 from "../assets/d7aa72cd5ce16e064ff385e4bf0a8def4b81d150.png";
 import imgHomepageFigmaComparision1 from "../assets/d450788c64c43761ca9d5b9c22f92a9e79db98e3.png";
 import imgHomepageFigmaCamera1 from "../assets/c17258cea165bff6fcbe560aa8eb784bb300de07.png";
 import imgHomepageFigmaViewpoert1 from "../assets/d1f75b4d681dd8c0a2c372c28c579a2c670d6b59.png";
 import { StandardizedHeaderS, Plus } from './SharedHeader';
+import bgVideo from "../assets/BGVID.mp4";
 
 function NewProjButton({ onClick }: { onClick: () => void }) {
   return (
@@ -50,7 +50,14 @@ export default function DesktopHomePage({
       {/* Point Cloud Image */}
       <div className="absolute h-[41.25vw] left-[23.9%] top-[8.8vw] w-[52.19%]" data-name="TURNTABLE POINT CLOUD 1">
         <div className="absolute inset-0 opacity-50 overflow-hidden pointer-events-none">
-          <img alt="" className="absolute w-full h-full object-cover" src={imgTurntablePointCloud1} />
+          <video
+            className="absolute w-full h-full object-cover"
+            src={bgVideo}
+            autoPlay
+            loop
+            muted
+            playsInline
+          />
         </div>
       </div>
       
