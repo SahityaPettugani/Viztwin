@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { X, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { X, ZoomIn, ZoomOut } from 'lucide-react';
 import { StandardizedHeaderS } from '../../imports/SharedHeader';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+
+type ViewPreset = 'all' | 'top' | 'bottom' | 'left' | 'right' | 'front' | 'back';
 
 interface ModelViewerProps {
   projectTitle: string;
@@ -60,6 +62,200 @@ interface BimElementProps {
 interface LegendItem {
   name: string;
   color: string;
+}
+
+interface ZoomCommand {
+  type: 'in' | 'out';
+  nonce: number;
+}
+
+function ViewCube({
+  activePreset,
+  onSelect,
+}: {
+  activePreset: ViewPreset;
+  onSelect: (preset: ViewPreset) => void;
+}) {
+  const presetRotations: Record<ViewPreset, { x: number; y: number }> = {
+    all: { x: -28, y: 35 },
+    front: { x: 0, y: 0 },
+    back: { x: 0, y: 180 },
+    left: { x: 0, y: -90 },
+    right: { x: 0, y: 90 },
+    top: { x: -90, y: 0 },
+    bottom: { x: 90, y: 0 },
+  };
+  const [rotation, setRotation] = useState(presetRotations[activePreset]);
+  const dragState = useRef<{ dragging: boolean; x: number; y: number }>({
+    dragging: false,
+    x: 0,
+    y: 0,
+  });
+
+  useEffect(() => {
+    setRotation(presetRotations[activePreset]);
+  }, [activePreset]);
+
+  const startDrag = (clientX: number, clientY: number) => {
+    dragState.current = { dragging: true, x: clientX, y: clientY };
+  };
+
+  const updateDrag = (clientX: number, clientY: number) => {
+    if (!dragState.current.dragging) {
+      return;
+    }
+
+    const deltaX = clientX - dragState.current.x;
+    const deltaY = clientY - dragState.current.y;
+    dragState.current.x = clientX;
+    dragState.current.y = clientY;
+
+    setRotation((current) => ({
+      x: Math.max(-120, Math.min(120, current.x - deltaY * 0.45)),
+      y: current.y + deltaX * 0.45,
+    }));
+  };
+
+  const endDrag = () => {
+    dragState.current.dragging = false;
+  };
+
+  const handleFaceClick = (preset: Exclude<ViewPreset, 'all'>) => {
+    setRotation(presetRotations[preset]);
+    onSelect(preset);
+  };
+
+  const faceBaseClass =
+    "absolute flex items-center justify-center rounded-[0.52vw] border font-['Satoshi_Variable:Bold',sans-serif] tracking-[0.08em] text-[0.58vw] transition-colors cursor-pointer select-none";
+  const getFaceColors = (preset: Exclude<ViewPreset, 'all'>) =>
+    activePreset === preset
+      ? 'border-[#5ed6aa] bg-[#91f9d0] text-[#000001]'
+      : 'border-[#d7d7d7] bg-white/94 text-[#333333] hover:bg-[#f5f5f5]';
+  const activeLabel =
+    activePreset === 'all' ? 'Perspective' : activePreset.charAt(0).toUpperCase() + activePreset.slice(1);
+  const cubeSize = '3.3vw';
+  const halfDepth = '1.65vw';
+
+  return (
+    <div className="absolute top-[1.04vw] right-[1.04vw] z-10 rounded-[0.78vw] border border-[#d7d7d7] bg-white/92 p-[0.58vw] shadow-sm backdrop-blur-[2px]">
+      <div className="mb-[0.52vw] flex items-center justify-between">
+        <div>
+          <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.73vw] text-[#000001]">View Cube</p>
+          <p className="font-['Satoshi_Variable:Medium',sans-serif] text-[0.62vw] uppercase tracking-[0.12em] text-[#666666]">
+            {activeLabel}
+          </p>
+        </div>
+        <button
+          onClick={() => onSelect('all')}
+          className={`rounded-[0.42vw] px-[0.52vw] py-[0.21vw] text-[0.62vw] font-['Satoshi_Variable:Bold',sans-serif] tracking-[0.08em] transition-colors ${
+            activePreset === 'all'
+              ? 'bg-[#91f9d0] text-[#000001]'
+              : 'bg-[#f5f5f5] text-[#333333] hover:bg-[#ebebeb]'
+          }`}
+        >
+          ALL
+        </button>
+      </div>
+
+      <div
+        className="relative h-[7.4vw] w-[7.4vw]"
+        style={{ perspective: '18vw' }}
+        onMouseLeave={endDrag}
+        onMouseUp={endDrag}
+        onMouseMove={(event) => updateDrag(event.clientX, event.clientY)}
+      >
+        <div
+          className="absolute inset-0"
+          onMouseDown={(event) => startDrag(event.clientX, event.clientY)}
+          style={{ cursor: dragState.current.dragging ? 'grabbing' : 'grab' }}
+        >
+          <div
+            className="absolute left-1/2 top-1/2"
+            style={{
+              width: cubeSize,
+              height: cubeSize,
+              transformStyle: 'preserve-3d',
+              transform: `translate(-50%, -50%) rotateX(${rotation.x}deg) rotateZ(0deg) rotateY(${rotation.y}deg)`,
+              transition: dragState.current.dragging ? 'none' : 'transform 180ms ease-out',
+            }}
+          >
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleFaceClick('front');
+              }}
+              className={`${faceBaseClass} ${getFaceColors('front')}`}
+              style={{ width: cubeSize, height: cubeSize, transform: `translateZ(${halfDepth})` }}
+            >
+              FRONT
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleFaceClick('back');
+              }}
+              className={`${faceBaseClass} ${getFaceColors('back')}`}
+              style={{ width: cubeSize, height: cubeSize, transform: `rotateY(180deg) translateZ(${halfDepth})` }}
+            >
+              BACK
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleFaceClick('right');
+              }}
+              className={`${faceBaseClass} ${getFaceColors('right')}`}
+              style={{ width: cubeSize, height: cubeSize, transform: `rotateY(90deg) translateZ(${halfDepth})` }}
+            >
+              RIGHT
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleFaceClick('left');
+              }}
+              className={`${faceBaseClass} ${getFaceColors('left')}`}
+              style={{ width: cubeSize, height: cubeSize, transform: `rotateY(-90deg) translateZ(${halfDepth})` }}
+            >
+              LEFT
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleFaceClick('top');
+              }}
+              className={`${faceBaseClass} ${getFaceColors('top')}`}
+              style={{ width: cubeSize, height: cubeSize, transform: `rotateX(90deg) translateZ(${halfDepth})` }}
+            >
+              TOP
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleFaceClick('bottom');
+              }}
+              className={`${faceBaseClass} ${getFaceColors('bottom')}`}
+              style={{ width: cubeSize, height: cubeSize, transform: `rotateX(-90deg) translateZ(${halfDepth})` }}
+            >
+              BOTTOM
+            </button>
+          </div>
+
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center">
+            <p className="rounded-full bg-[#f5f5f5] px-[0.52vw] py-[0.18vw] font-['Satoshi_Variable:Medium',sans-serif] text-[0.58vw] uppercase tracking-[0.1em] text-[#666666]">
+              Drag to rotate
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const classOrder = ['ceiling', 'floor', 'wall', 'beam', 'column', 'window', 'door', 'unassigned'];
@@ -224,6 +420,8 @@ function ThreeScene({
   pointCloudUrl,
   bimModelUrl,
   viewMode,
+  viewPreset,
+  zoomCommand,
   elementVisibility,
   onBimSelect,
 }: {
@@ -232,10 +430,20 @@ function ThreeScene({
   pointCloudUrl?: string;
   bimModelUrl?: string;
   viewMode: 'instanced' | 'bim';
+  viewPreset: ViewPreset;
+  zoomCommand: ZoomCommand | null;
   elementVisibility?: Record<string, boolean>;
   onBimSelect?: (id: string | null) => void;
 }) {
   const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const targetRef = useRef(new THREE.Vector3(0, 0, 0));
+  const orbitRadiusRef = useRef(12);
+  const azimuthRef = useRef(-Math.PI / 4);
+  const elevationRef = useRef(0.65);
+  const presetRef = useRef<ViewPreset>(viewPreset);
+  const contentSizeRef = useRef(new THREE.Vector3(1, 1, 1));
+  const zoomCommandNonceRef = useRef(0);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -249,8 +457,8 @@ function ThreeScene({
     scene.background = new THREE.Color(0xfafafa);
 
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
-    camera.position.set(8, 6, 8);
-    camera.lookAt(0, 0, 0);
+    camera.up.set(0, 0, 1);
+    cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
@@ -259,6 +467,63 @@ function ThreeScene({
 
     let isDragging = false;
     let previousMousePosition = { x: 0, y: 0 };
+
+    const updateCameraPosition = () => {
+      const target = targetRef.current;
+      const radius = orbitRadiusRef.current;
+      const azimuth = azimuthRef.current;
+      const elevation = elevationRef.current;
+      const planarRadius = radius * Math.cos(elevation);
+
+      camera.position.set(
+        target.x + planarRadius * Math.cos(azimuth),
+        target.y + planarRadius * Math.sin(azimuth),
+        target.z + radius * Math.sin(elevation),
+      );
+      camera.lookAt(target);
+    };
+
+    const applyCameraPreset = (preset: ViewPreset) => {
+      presetRef.current = preset;
+
+      const size = contentSizeRef.current;
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      orbitRadiusRef.current = Math.max(8, maxDim * 2.4);
+
+      switch (preset) {
+        case 'top':
+          azimuthRef.current = 0;
+          elevationRef.current = Math.PI / 2 - 0.01;
+          break;
+        case 'bottom':
+          azimuthRef.current = 0;
+          elevationRef.current = -Math.PI / 2 + 0.01;
+          break;
+        case 'left':
+          azimuthRef.current = Math.PI;
+          elevationRef.current = 0;
+          break;
+        case 'right':
+          azimuthRef.current = 0;
+          elevationRef.current = 0;
+          break;
+        case 'front':
+          azimuthRef.current = -Math.PI / 2;
+          elevationRef.current = 0;
+          break;
+        case 'back':
+          azimuthRef.current = Math.PI / 2;
+          elevationRef.current = 0;
+          break;
+        case 'all':
+        default:
+          azimuthRef.current = -Math.PI / 4;
+          elevationRef.current = 0.65;
+          break;
+      }
+
+      updateCameraPosition();
+    };
 
     const handleMouseDown = (e: MouseEvent) => {
       isDragging = true;
@@ -271,9 +536,12 @@ function ThreeScene({
       const deltaX = e.clientX - previousMousePosition.x;
       const deltaY = e.clientY - previousMousePosition.y;
 
-      camera.position.x -= deltaX * 0.02;
-      camera.position.y += deltaY * 0.02;
-      camera.lookAt(0, 0, 0);
+      azimuthRef.current -= deltaX * 0.008;
+      elevationRef.current = Math.max(
+        -Math.PI / 2 + 0.05,
+        Math.min(Math.PI / 2 - 0.05, elevationRef.current + deltaY * 0.008),
+      );
+      updateCameraPosition();
 
       previousMousePosition = { x: e.clientX, y: e.clientY };
     };
@@ -285,7 +553,8 @@ function ThreeScene({
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 1.1 : 0.9;
-      camera.position.multiplyScalar(factor);
+      orbitRadiusRef.current = Math.max(2, Math.min(100, orbitRadiusRef.current * factor));
+      updateCameraPosition();
     };
 
     renderer.domElement.addEventListener('mousedown', handleMouseDown);
@@ -305,6 +574,7 @@ function ThreeScene({
     scene.add(directionalLight2);
 
     const gridHelper = new THREE.GridHelper(20, 20, 0xcccccc, 0xe8e9eb);
+    gridHelper.rotation.x = Math.PI / 2;
     scene.add(gridHelper);
 
     const roomElements: THREE.Mesh[] = [];
@@ -335,12 +605,13 @@ function ThreeScene({
       const size = new THREE.Vector3();
       box.getCenter(center);
       box.getSize(size);
-
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
       contentGroup.position.set(-center.x, -center.y, -center.z);
-      normalizedGroup.scale.setScalar(5 / maxDim);
-      camera.position.set(8, 6, 8);
-      camera.lookAt(0, 0, 0);
+      const normalizedScale = 5 / maxDim;
+      normalizedGroup.scale.setScalar(normalizedScale);
+      contentSizeRef.current.copy(size).multiplyScalar(normalizedScale);
+      orbitRadiusRef.current = Math.max(8, Math.max(contentSizeRef.current.x, contentSizeRef.current.y, contentSizeRef.current.z) * 2.4);
+      applyCameraPreset(presetRef.current);
     };
 
     if (pointCloudUrl) {
@@ -441,8 +712,7 @@ function ThreeScene({
         const floorGeometry = new THREE.PlaneGeometry(10, 10);
         const floorMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc });
         const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-        floor.rotation.x = -Math.PI / 2;
-        floor.position.y = 0;
+        floor.position.z = 0;
         scene.add(floor);
         roomElements.push(floor);
       }
@@ -453,25 +723,25 @@ function ThreeScene({
         const backWallGeometry = new THREE.BoxGeometry(10, 3, 0.2);
         const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xe8e9eb });
         const backWall = new THREE.Mesh(backWallGeometry, wallMaterial);
-        backWall.position.set(0, 1.5, -5);
+        backWall.position.set(0, -5, 1.5);
         scene.add(backWall);
         roomElements.push(backWall);
 
         // Left wall
         const leftWall = new THREE.Mesh(
-          new THREE.BoxGeometry(0.2, 3, 10),
+          new THREE.BoxGeometry(0.2, 10, 3),
           new THREE.MeshStandardMaterial({ color: 0xe8e9eb })
         );
-        leftWall.position.set(-5, 1.5, 0);
+        leftWall.position.set(-5, 0, 1.5);
         scene.add(leftWall);
         roomElements.push(leftWall);
 
         // Right wall
         const rightWall = new THREE.Mesh(
-          new THREE.BoxGeometry(0.2, 3, 10),
+          new THREE.BoxGeometry(0.2, 10, 3),
           new THREE.MeshStandardMaterial({ color: 0xe8e9eb })
         );
-        rightWall.position.set(5, 1.5, 0);
+        rightWall.position.set(5, 0, 1.5);
         scene.add(rightWall);
         roomElements.push(rightWall);
       }
@@ -481,8 +751,7 @@ function ThreeScene({
         const ceilingGeometry = new THREE.PlaneGeometry(10, 10);
         const ceilingMaterial = new THREE.MeshStandardMaterial({ color: 0xf5f5f5 });
         const ceiling = new THREE.Mesh(ceilingGeometry, ceilingMaterial);
-        ceiling.rotation.x = Math.PI / 2;
-        ceiling.position.y = 3;
+        ceiling.position.z = 3;
         scene.add(ceiling);
         roomElements.push(ceiling);
       }
@@ -497,12 +766,12 @@ function ThreeScene({
         });
         
         const window1 = new THREE.Mesh(windowGeometry, windowMaterial);
-        window1.position.set(-2, 2, -4.95);
+        window1.position.set(-2, -4.95, 2);
         scene.add(window1);
         roomElements.push(window1);
 
         const window2 = new THREE.Mesh(windowGeometry, windowMaterial.clone());
-        window2.position.set(2, 2, -4.95);
+        window2.position.set(2, -4.95, 2);
         scene.add(window2);
         roomElements.push(window2);
       }
@@ -512,7 +781,7 @@ function ThreeScene({
         const doorGeometry = new THREE.BoxGeometry(1.2, 2.5, 0.1);
         const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x8b6f47 });
         const door = new THREE.Mesh(doorGeometry, doorMaterial);
-        door.position.set(4.95, 1.25, 2);
+        door.position.set(4.95, 2, 1.25);
         scene.add(door);
         roomElements.push(door);
       }
@@ -523,12 +792,12 @@ function ThreeScene({
         const columnMaterial = new THREE.MeshStandardMaterial({ color: 0x999999 });
         
         const column1 = new THREE.Mesh(columnGeometry, columnMaterial);
-        column1.position.set(-3, 1.5, -3);
+        column1.position.set(-3, -3, 1.5);
         scene.add(column1);
         roomElements.push(column1);
 
         const column2 = new THREE.Mesh(columnGeometry, columnMaterial.clone());
-        column2.position.set(3, 1.5, -3);
+        column2.position.set(3, -3, 1.5);
         scene.add(column2);
         roomElements.push(column2);
       }
@@ -538,11 +807,13 @@ function ThreeScene({
         const beamGeometry = new THREE.BoxGeometry(10, 0.3, 0.3);
         const beamMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
         const beam = new THREE.Mesh(beamGeometry, beamMaterial);
-        beam.position.set(0, 2.85, -3);
+        beam.position.set(0, -3, 2.85);
         scene.add(beam);
         roomElements.push(beam);
       }
     }
+
+    applyCameraPreset(presetRef.current);
 
     // Animation loop
     const animate = () => {
@@ -609,6 +880,81 @@ function ThreeScene({
   }, [filters, pointCloudUrl, bimModelUrl, viewMode, containerRef, onBimSelect, elementVisibility]);
 
   useEffect(() => {
+    if (!cameraRef.current) {
+      return;
+    }
+
+    presetRef.current = viewPreset;
+    const size = contentSizeRef.current;
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    orbitRadiusRef.current = Math.max(8, maxDim * 2.4);
+
+    switch (viewPreset) {
+      case 'top':
+        azimuthRef.current = 0;
+        elevationRef.current = Math.PI / 2 - 0.01;
+        break;
+      case 'bottom':
+        azimuthRef.current = 0;
+        elevationRef.current = -Math.PI / 2 + 0.01;
+        break;
+      case 'left':
+        azimuthRef.current = Math.PI;
+        elevationRef.current = 0;
+        break;
+      case 'right':
+        azimuthRef.current = 0;
+        elevationRef.current = 0;
+        break;
+      case 'front':
+        azimuthRef.current = -Math.PI / 2;
+        elevationRef.current = 0;
+        break;
+      case 'back':
+        azimuthRef.current = Math.PI / 2;
+        elevationRef.current = 0;
+        break;
+      case 'all':
+      default:
+        azimuthRef.current = -Math.PI / 4;
+        elevationRef.current = 0.65;
+        break;
+    }
+
+    const target = targetRef.current;
+    const radius = orbitRadiusRef.current;
+    const planarRadius = radius * Math.cos(elevationRef.current);
+
+    cameraRef.current.position.set(
+      target.x + planarRadius * Math.cos(azimuthRef.current),
+      target.y + planarRadius * Math.sin(azimuthRef.current),
+      target.z + radius * Math.sin(elevationRef.current),
+    );
+    cameraRef.current.lookAt(target);
+  }, [viewPreset]);
+
+  useEffect(() => {
+    if (!zoomCommand || zoomCommand.nonce === zoomCommandNonceRef.current || !cameraRef.current) {
+      return;
+    }
+
+    zoomCommandNonceRef.current = zoomCommand.nonce;
+    const factor = zoomCommand.type === 'in' ? 0.9 : 1.1;
+    orbitRadiusRef.current = Math.max(2, Math.min(100, orbitRadiusRef.current * factor));
+
+    const target = targetRef.current;
+    const radius = orbitRadiusRef.current;
+    const planarRadius = radius * Math.cos(elevationRef.current);
+
+    cameraRef.current.position.set(
+      target.x + planarRadius * Math.cos(azimuthRef.current),
+      target.y + planarRadius * Math.sin(azimuthRef.current),
+      target.z + radius * Math.sin(elevationRef.current),
+    );
+    cameraRef.current.lookAt(target);
+  }, [zoomCommand]);
+
+  useEffect(() => {
     if (!bimModelUrl || !elementVisibility || !sceneRef.current) {
       return;
     }
@@ -643,6 +989,8 @@ export default function ModelViewer({
   bimPropsUrl,
 }: ModelViewerProps) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const [viewPreset, setViewPreset] = useState<ViewPreset>('all');
+  const [zoomCommand, setZoomCommand] = useState<ZoomCommand | null>(null);
 
   const [activeTab, setActiveTab] = useState<'instanced' | 'bim'>('instanced');
 
@@ -663,7 +1011,6 @@ export default function ModelViewer({
   const [bimPropsById, setBimPropsById] = useState<Record<string, BimElementProps>>({});
   const [pointCloudLegend, setPointCloudLegend] = useState<LegendItem[]>([]);
   const [elementVisibility, setElementVisibility] = useState<Record<string, boolean>>({});
-
   useEffect(() => {
     let cancelled = false;
 
@@ -1030,7 +1377,7 @@ export default function ModelViewer({
           </div>
 
           {activePointCloudUrl && (
-            <div className="absolute top-[1.04vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
+            <div className="absolute top-[4.8vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
                 Point Cloud Colors
               </p>
@@ -1054,14 +1401,17 @@ export default function ModelViewer({
 
           {/* Zoom Controls */}
           <div className="absolute bottom-[1.56vw] right-[1.56vw] flex flex-col gap-[0.52vw] z-10">
-            <button className="bg-white border border-[#d7d7d7] p-[0.78vw] rounded-[0.52vw] hover:bg-[#f5f5f5] transition-colors">
+            <button
+              onClick={() => setZoomCommand({ type: 'in', nonce: Date.now() })}
+              className="bg-white border border-[#d7d7d7] p-[0.78vw] rounded-[0.52vw] hover:bg-[#f5f5f5] transition-colors"
+            >
               <ZoomIn className="w-[1.25vw] h-[1.25vw]" />
             </button>
-            <button className="bg-white border border-[#d7d7d7] p-[0.78vw] rounded-[0.52vw] hover:bg-[#f5f5f5] transition-colors">
+            <button
+              onClick={() => setZoomCommand({ type: 'out', nonce: Date.now() })}
+              className="bg-white border border-[#d7d7d7] p-[0.78vw] rounded-[0.52vw] hover:bg-[#f5f5f5] transition-colors"
+            >
               <ZoomOut className="w-[1.25vw] h-[1.25vw]" />
-            </button>
-            <button className="bg-white border border-[#d7d7d7] p-[0.78vw] rounded-[0.52vw] hover:bg-[#f5f5f5] transition-colors">
-              <Maximize2 className="w-[1.25vw] h-[1.25vw]" />
             </button>
           </div>
 
@@ -1083,6 +1433,8 @@ export default function ModelViewer({
             </div>
           )}
 
+          <ViewCube activePreset={viewPreset} onSelect={setViewPreset} />
+
           {/* Three.js Container */}
           <div ref={canvasContainerRef} className="w-full h-full">
             <ThreeScene
@@ -1090,6 +1442,8 @@ export default function ModelViewer({
               containerRef={canvasContainerRef}
               pointCloudUrl={activePointCloudUrl}
               bimModelUrl={activeBimModelUrl}
+              viewPreset={viewPreset}
+              zoomCommand={zoomCommand}
               elementVisibility={elementVisibility}
               viewMode={resolvedTab?.key || 'instanced'}
               onBimSelect={resolvedTab?.key === 'bim' ? handleBimSelect : undefined}
