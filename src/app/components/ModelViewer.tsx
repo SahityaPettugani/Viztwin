@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronDown, ChevronRight, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { StandardizedHeaderS } from '../../imports/SharedHeader';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
@@ -9,6 +9,7 @@ type ViewPreset = 'all' | 'top' | 'bottom' | 'left' | 'right' | 'front' | 'back'
 
 interface ModelViewerProps {
   projectTitle: string;
+  buildingType?: string;
   onClose: () => void;
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
@@ -295,14 +296,19 @@ const toCategoryName = (type: string) => {
 const inferElementType = (value: string) => {
   const normalized = (value || '').toLowerCase();
   if (normalized.includes('wall')) return 'wall';
-  if (normalized.includes('floor')) return 'floor';
-  if (normalized.includes('ceiling')) return 'ceiling';
+  if (normalized.includes('floor') || normalized.includes('slab')) return 'floor';
+  if (normalized.includes('ceiling') || normalized.includes('covering')) return 'ceiling';
   if (normalized.includes('column')) return 'column';
   if (normalized.includes('beam')) return 'beam';
   if (normalized.includes('window')) return 'window';
   if (normalized.includes('door')) return 'door';
   if (normalized.includes('stair')) return 'stair';
   return 'unassigned';
+};
+
+const toDisplayElementType = (value?: string) => {
+  const inferred = inferElementType(value || '');
+  return classOrder.includes(inferred) ? inferred : 'unassigned';
 };
 
 const getDimensionsFromGeometry = (geometry?: { [key: string]: number } | null) => {
@@ -371,6 +377,26 @@ const buildFiltersFromBimProps = (propsById: Record<string, BimElementProps>) =>
 };
 
 const toLabel = (name: string) => name.charAt(0).toUpperCase() + name.slice(1);
+
+const getUploadedFileNameFromUrl = (rawPointCloudUrl?: string) => {
+  if (!rawPointCloudUrl) {
+    return 'Unknown file';
+  }
+
+  try {
+    const pathname = new URL(rawPointCloudUrl).pathname;
+    const filename = pathname.split('/').filter(Boolean).pop();
+    if (!filename) {
+      return 'Unknown file';
+    }
+
+    const decoded = decodeURIComponent(filename);
+    const cleaned = decoded.replace(/^\d+-/, '');
+    return cleaned || decoded;
+  } catch {
+    return 'Unknown file';
+  }
+};
 
 const getRepresentativeColorFromPly = (url: string): Promise<[number, number, number] | null> =>
   new Promise((resolve) => {
@@ -976,6 +1002,7 @@ function ThreeScene({
 
 export default function ModelViewer({
   projectTitle,
+  buildingType,
   onClose,
   onNavigateHome,
   onNavigateGetStarted,
@@ -985,7 +1012,7 @@ export default function ModelViewer({
   rawPointCloudUrl,
   instancedPointCloudUrl,
   bimModelUrl,
-  bimIfcUrl: _bimIfcUrl,
+  bimIfcUrl,
   bimPropsUrl,
 }: ModelViewerProps) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -1011,6 +1038,20 @@ export default function ModelViewer({
   const [bimPropsById, setBimPropsById] = useState<Record<string, BimElementProps>>({});
   const [pointCloudLegend, setPointCloudLegend] = useState<LegendItem[]>([]);
   const [elementVisibility, setElementVisibility] = useState<Record<string, boolean>>({});
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
+  const uploadedFileName = getUploadedFileNameFromUrl(rawPointCloudUrl);
+
+  useEffect(() => {
+    setExpandedCategories((current) => {
+      const next = { ...current };
+      for (const category of filters) {
+        if (!(category.name in next)) {
+          next[category.name] = true;
+        }
+      }
+      return next;
+    });
+  }, [filters]);
   useEffect(() => {
     let cancelled = false;
 
@@ -1187,25 +1228,23 @@ export default function ModelViewer({
     const info = bimPropsById[id];
     if (!info) {
       setSelectedElement({
-        type: 'Unknown',
+        type: 'unassigned',
         elementId: id,
         dimensions: '-',
-        properties: [{ label: 'ID', value: id }],
+        properties: [],
       });
       return;
     }
 
     const fmt = (v?: number) => (v === undefined ? 'N/A' : `${v.toFixed(2)} m`);
     const dims = info.dimensions;
+    const elementType = toDisplayElementType(info.className || info.type || info.name || info.id);
     setSelectedElement({
-      type: info.className || 'Unknown',
+      type: elementType,
       elementId: info.id,
       material: 'N/A',
       dimensions: `${fmt(dims?.x)} x ${fmt(dims?.y)} x ${fmt(dims?.z)}`,
       properties: [
-        { label: 'Class', value: info.className || 'Unknown' },
-        { label: 'Name', value: info.name || '-' },
-        { label: 'ID', value: info.id },
         { label: 'Size X', value: fmt(dims?.x) },
         { label: 'Size Y', value: fmt(dims?.y) },
         { label: 'Size Z', value: fmt(dims?.z) },
@@ -1320,6 +1359,13 @@ export default function ModelViewer({
     }));
   };
 
+  const toggleCategory = (categoryName: string) => {
+    setExpandedCategories((current) => ({
+      ...current,
+      [categoryName]: !(current[categoryName] ?? true),
+    }));
+  };
+
   return (
     <div className="fixed inset-0 bg-white z-50">
       {/* Header */}
@@ -1336,6 +1382,18 @@ export default function ModelViewer({
         {/* Left Sidebar - Filters */}
         <div className="w-[18.75vw] bg-[#f5f5f5] border-r border-[#d7d7d7] overflow-y-auto">
           <div className="p-[1.56vw]">
+            <div className="mb-[1.56vw] rounded-[0.78vw] border border-[#d7d7d7] bg-white px-[0.94vw] py-[0.94vw]">
+              <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.78vw] uppercase tracking-[0.12em] text-[#666666]">
+                File Details
+              </p>
+              <p className="mt-[0.42vw] break-all font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001]">
+                {uploadedFileName}
+              </p>
+              <p className="mt-[0.26vw] font-['Satoshi_Variable:Medium',sans-serif] text-[0.83vw] text-[#666666]">
+                {buildingType || 'Building type unavailable'}
+              </p>
+            </div>
+
             <div className="flex items-center justify-between mb-[1.04vw]">
               <h2 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.25vw] text-[#000001]">Layers</h2>
               <button onClick={onClose} className="p-[0.52vw] hover:bg-[#e8e9eb] rounded-[0.52vw] transition-colors">
@@ -1343,28 +1401,48 @@ export default function ModelViewer({
               </button>
             </div>
 
-                {filters.map((category) => (
-                  <div key={category.name} className="mb-[1.56vw]">
-                <h3 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001] mb-[0.52vw]">
-                  {category.name}
-                </h3>
-                <div className="space-y-[0.52vw]">
-                    {category.items.map((item) => (
-                    <label key={item.id} className="flex items-center gap-[0.52vw] cursor-pointer hover:bg-[#e8e9eb] p-[0.52vw] rounded-[0.52vw] transition-colors">
-                      <input
-                        type="checkbox"
-                        checked={item.enabled}
-                        onChange={() => toggleFilter(category.name, item.id)}
-                        className="w-[1.04vw] h-[1.04vw] accent-[#91f9d0]"
-                      />
-                      <span className="font-['Satoshi_Variable:Medium',sans-serif] text-[0.94vw] text-[#000001]">
-                        {item.name}
-                      </span>
-                    </label>
-                  ))}
+            {filters.map((category) => {
+              const isExpanded = expandedCategories[category.name] ?? true;
+
+              return (
+                <div key={category.name} className="mb-[1.04vw] overflow-hidden rounded-[0.78vw] border border-[#d7d7d7] bg-white">
+                  <button
+                    type="button"
+                    onClick={() => toggleCategory(category.name)}
+                    className="flex w-full items-center justify-between px-[0.78vw] py-[0.72vw] text-left hover:bg-[#f8f8f8] transition-colors"
+                  >
+                    <span className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001]">
+                      {category.name}
+                    </span>
+                    {isExpanded ? (
+                      <ChevronDown className="h-[1vw] w-[1vw] text-[#666666]" />
+                    ) : (
+                      <ChevronRight className="h-[1vw] w-[1vw] text-[#666666]" />
+                    )}
+                  </button>
+
+                  {isExpanded && (
+                    <div className="border-t border-[#ececec] px-[0.52vw] py-[0.52vw]">
+                      <div className="space-y-[0.42vw]">
+                        {category.items.map((item) => (
+                          <label key={item.id} className="flex items-center gap-[0.52vw] cursor-pointer hover:bg-[#e8e9eb] p-[0.52vw] rounded-[0.52vw] transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={item.enabled}
+                              onChange={() => toggleFilter(category.name, item.id)}
+                              className="w-[1.04vw] h-[1.04vw] accent-[#91f9d0]"
+                            />
+                            <span className="font-['Satoshi_Variable:Medium',sans-serif] text-[0.94vw] text-[#000001]">
+                              {item.name}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -1451,11 +1529,33 @@ export default function ModelViewer({
           </div>
         </div>
 
-        {/* Right Sidebar - Material Properties */}
+        {/* Right Sidebar - Element Properties */}
         <div className="w-[20.83vw] bg-[#f5f5f5] border-l border-[#d7d7d7] overflow-y-auto">
           <div className="p-[1.56vw]">
+            <div className="mb-[1.56vw] rounded-[0.78vw] border border-[#d7d7d7] bg-white p-[1.04vw]">
+              <h2 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001] mb-[0.42vw]">
+                Download Output
+              </h2>
+              <p className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.83vw] text-[#666666] mb-[0.83vw]">
+                Download the generated IFC model for external BIM workflows.
+              </p>
+              {bimIfcUrl ? (
+                <a
+                  href={bimIfcUrl}
+                  download
+                  className="inline-flex w-full items-center justify-center rounded-[0.62vw] bg-[#91f9d0] px-[0.94vw] py-[0.72vw] font-['Satoshi_Variable:Bold',sans-serif] text-[0.88vw] text-[#000001] transition-colors hover:bg-[#7ee6bc]"
+                >
+                  Download IFC
+                </a>
+              ) : (
+                <div className="rounded-[0.62vw] bg-[#f5f5f5] px-[0.94vw] py-[0.72vw] font-['Satoshi_Variable:Medium',sans-serif] text-[0.83vw] text-[#666666]">
+                  IFC file unavailable for this project.
+                </div>
+              )}
+            </div>
+
             <h2 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.25vw] text-[#000001] mb-[1.56vw]">
-              Material Properties
+              Element Properties
             </h2>
 
             {selectedElement ? (
@@ -1468,17 +1568,6 @@ export default function ModelViewer({
                     {selectedElement.type}
                   </p>
                 </div>
-
-                {selectedElement.elementId && (
-                  <div>
-                    <h3 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001] mb-[0.52vw]">
-                      Element ID
-                    </h3>
-                    <p className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.94vw] text-[#666666] break-all">
-                      {selectedElement.elementId}
-                    </p>
-                  </div>
-                )}
 
                 <div>
                   <h3 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001] mb-[0.52vw]">
@@ -1507,16 +1596,6 @@ export default function ModelViewer({
                   </div>
                 </div>
 
-                <div className="border-t border-[#d7d7d7] pt-[1.04vw]">
-                  <h3 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.04vw] text-[#000001] mb-[0.52vw]">
-                    Material Preview
-                  </h3>
-                  <div className="w-full h-[8.33vw] bg-[#cccccc] rounded-[0.52vw] flex items-center justify-center">
-                    <span className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.83vw] text-[#666666]">
-                      {selectedElement.material || 'N/A'}
-                    </span>
-                  </div>
-                </div>
               </div>
             ) : (
               <p className="font-['Satoshi_Variable:Regular',sans-serif] text-[0.94vw] text-[#666666]">
