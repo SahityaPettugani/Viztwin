@@ -346,7 +346,6 @@ export default function DesktopProjectLibrary({
           onNavigateGetStarted={onNavigateGetStarted}
           onNavigateLibrary={onNavigateLibrary}
           rawPointCloudUrl={selectedPointCloud?.raw}
-          semanticPointCloudUrl={selectedPointCloud?.semantic}
           instancedPointCloudUrl={selectedPointCloud?.instanced}
           bimModelUrl={selectedPointCloud?.bim}
           bimIfcUrl={selectedPointCloud?.bimIfc}
