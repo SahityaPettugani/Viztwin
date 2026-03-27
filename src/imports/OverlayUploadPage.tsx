@@ -57,7 +57,7 @@ function Group1() {
   return (
     <div className="-translate-x-1/2 -translate-y-1/2 absolute contents left-1/2 top-[calc(50%-28.5px)]">
       <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Medium',sans-serif] leading-[normal] left-[285.5px] not-italic text-[32px] text-black text-center top-[362px] w-[571px] whitespace-pre-wrap">Upload or drag and drop a file.</p>
-      <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Regular',sans-serif] leading-[normal] left-[285.5px] not-italic text-[24px] text-black text-center top-[406px] w-[457px] whitespace-pre-wrap">{`File format : PLY, Max ~GB `}</p>
+      <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Regular',sans-serif] leading-[normal] left-[285.5px] not-italic text-[24px] text-black text-center top-[406px] w-[457px] whitespace-pre-wrap">{`File format : PLY, Max ~2 GB `}</p>
       <InterfaceFileTextTextCommonFile />
     </div>
   );

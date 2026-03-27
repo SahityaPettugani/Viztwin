@@ -306,12 +306,12 @@ export default function App() {
       {overlayState !== 'none' && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50" onClick={handleCloseOverlay}>
           {overlayState === 'upload' && (
-            <div className="relative scale-50" style={{ width: '571px', height: '682px' }} onClick={(event) => event.stopPropagation()}>
+            <div className="relative scale-70" style={{ width: '571px', height: '682px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadPage onUploadClick={handleShowProperties} onFileSelect={handleFileSelect} />
             </div>
           )}
           {overlayState === 'properties' && (
-            <div className="relative scale-50" style={{ width: '955px', height: '680px' }} onClick={(event) => event.stopPropagation()}>
+            <div className="relative scale-70" style={{ width: '955px', height: '680px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayFilePropertiesPopUp
                 formData={formData}
                 onChange={setFormData}
@@ -327,12 +327,12 @@ export default function App() {
             </div>
           )}
           {overlayState === 'uploading' && (
-            <div className="relative scale-50" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
+            <div className="relative scale-70" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadingPage progress={uploadProgress} fileName={uploadedFileName} onCancel={handleCancelUpload} stage={processingStage} />
             </div>
           )}
           {overlayState === 'uploaded' && (
-            <div className="relative scale-50" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
+            <div className="relative scale-70" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadedPage onClose={handleNavigateToLibrary} fileName={uploadedFileName} />
             </div>
           )}
