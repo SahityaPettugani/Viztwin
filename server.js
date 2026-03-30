@@ -151,10 +151,10 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
   console.log('[process-pointcloud] Input size (bytes):', req.file.size);
 
   try {
-    const checkpointPath = process.env.PYTHON_CHECKPOINT || 'C:\\Users\\iamsa\\Downloads\\val_best_miou.pth';
-    const vizInstScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'BACKEND', 'scan2bim', 'vizainst.py');
-    const cloud2BimDir = process.env.CLOUD2BIM_DIR || 'C:\\Users\\iamsa\\Downloads\\Cloud2BIM-1.02\\Cloud2BIM-1.02';
-    const json2IfcScriptPath = process.env.PYTHON_JSON2IFC_SCRIPT || path.join(cloud2BimDir, 'json2ifc.py');
+    const checkpointPath = process.env.PYTHON_CHECKPOINT || path.join(__dirname, 'models', 'val_best_miou.pth');
+    const vizInstScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'vizainst.py');
+    const cloud2BimDir = process.env.CLOUD2BIM_DIR || __dirname;
+    const json2IfcScriptPath = process.env.PYTHON_JSON2IFC_SCRIPT || path.join(__dirname, 'json2ifc.py');
     const ifcObjExporterScriptPath = process.env.PYTHON_IFC_EXPORTER_SCRIPT || path.join(__dirname, 'ifc_obj_exporter.py');
     const enableBimPreview = process.env.ENABLE_BIM_PREVIEW !== '0';
     const safeStem = path.parse(inputPath).name.replace(/[^a-zA-Z0-9._-]/g, '_');
