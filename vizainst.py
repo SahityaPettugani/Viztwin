@@ -1,70 +1,20 @@
-import numpy as np
-import open3d as o3d
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-import pyransac3d as pyrsc
-from sklearn.neighbors import NearestNeighbors # Added for smoothing
-
-import torch
-torch.backends.cudnn.benchmark = True
-from torch.nn import CrossEntropyLoss
-from torch.optim import Adam
-from torch.utils.data import DataLoader
-
+import argparse
+import json
 import os
-import sys
 from pathlib import Path
 
-
-def configure_scan2bim_path():
-    script_dir = Path(__file__).resolve().parent
-    candidates = []
-
-    env_dir = os.environ.get("SCAN2BIM_DIR")
-    if env_dir:
-        candidates.append(Path(env_dir))
-
-    backend_dir = script_dir / "BACKEND"
-    if backend_dir.exists():
-        candidates.append(backend_dir)
-        candidates.append(backend_dir / "scan2bim")
-        candidates.append(backend_dir / "src")
-
-        # Include nested folders under BACKEND as potential scan2bim roots.
-        for child in sorted(backend_dir.iterdir()):
-            if child.is_dir():
-                candidates.append(child)
-
-    candidates.extend([
-        script_dir,
-        script_dir.parent / "scan2bim",
-        Path(r"C:\Users\iamsa\Downloads\scan2bim"),
-    ])
-
-    for candidate in candidates:
-        if (candidate / "model").is_dir() and (candidate / "dataloaders").is_dir():
-            candidate_str = str(candidate)
-            if candidate_str not in sys.path:
-                sys.path.insert(0, candidate_str)
-            return candidate
-
-    raise ModuleNotFoundError(
-        "Could not locate scan2bim source directory containing 'model' and "
-        f"'dataloaders'. Checked: {', '.join(str(path) for path in candidates)}"
-    )
-
-
-SCAN2BIM_DIR = configure_scan2bim_path()
-
-from model.segcloud import SegCloud
-from model.bimnet import BIMNet
-from dataloaders.PCSdataset import PCSDataset
-from dataloaders.S3DISdataset import S3DISDataset
-
+import matplotlib.pyplot as plt
+import numpy as np
+import open3d as o3d
+import pyransac3d as pyrsc
+import torch
 from sklearn.cluster import DBSCAN
-import json
-from matplotlib.colors import to_rgb
-import argparse
+from sklearn.neighbors import NearestNeighbors
+from tqdm import tqdm
+
+from model.bimnet import BIMNet
+
+torch.backends.cudnn.benchmark = True
 
 ID_TO_NAME = {
     0: "ceiling",
@@ -74,19 +24,20 @@ ID_TO_NAME = {
     4: "column",
     5: "window",
     6: "door",
-    7: "unassigned",
 }
+
 
 def load_point_cloud(file_path):
     print(f"Loading point cloud from: {file_path}")
-    
-    if file_path.suffix in ['.ply', '.pcd']:
+
+    if file_path.suffix in [".ply", ".pcd"]:
         pcd = o3d.io.read_point_cloud(str(file_path))
     else:
         raise ValueError(f"Unsupported file format: {file_path.suffix}")
-    
+
     print(f"Loaded {len(pcd.points)} points")
     return pcd
+
 
 def separate_by_label(pcd, point_labels):
     points = np.asarray(pcd.points)
@@ -94,7 +45,7 @@ def separate_by_label(pcd, point_labels):
 
     separated = {}
     for class_id, class_name in ID_TO_NAME.items():
-        mask = (point_labels == class_id)
+        mask = point_labels == class_id
         if not np.any(mask):
             continue
 
@@ -107,151 +58,141 @@ def separate_by_label(pcd, point_labels):
 
     return separated
 
+
 def smooth_labels_knn(pcd, labels, k=5):
     print(f"Smoothing labels with KNN (k={k})...")
     points = np.asarray(pcd.points)
 
-    nbrs = NearestNeighbors(n_neighbors=k, algorithm='kd_tree', n_jobs=-1).fit(points)
-    distances, indices = nbrs.kneighbors(points)
-    
+    nbrs = NearestNeighbors(n_neighbors=k, algorithm="kd_tree", n_jobs=-1).fit(points)
+    _, indices = nbrs.kneighbors(points)
+
     new_labels = np.zeros_like(labels)
-    
-    neighbor_labels = labels[indices] 
-    
+    neighbor_labels = labels[indices]
+
     from scipy.stats import mode
+
     try:
         vote_result = mode(neighbor_labels, axis=1, keepdims=False)
         new_labels = vote_result[0]
-    except:
+    except Exception:
         for i in tqdm(range(len(labels)), desc="Voting"):
             counts = np.bincount(neighbor_labels[i])
             new_labels[i] = np.argmax(counts)
-            
+
     return new_labels
+
 
 def instantiate_with_dbscan(pcd, class_name, eps=0.1, min_points=100):
     if len(pcd.points) == 0:
         return []
-    
+
     points = np.asarray(pcd.points)
     colors = np.asarray(pcd.colors)
-    
+
     print(f"\nClustering {class_name} with DBSCAN...")
-    # import matplotlib.pyplot as plt
-
-    # # Calculate distances to the k-th nearest neighbor  
-    # from sklearn.neighbors import NearestNeighbors
-    # neigh = NearestNeighbors(n_neighbors=min_points)
-    # nbrs = neigh.fit(points)
-    # distances, indices = nbrs.kneighbors(points)
-    # distances = np.sort(distances[:, -1], axis=0)
-
-    # plt.plot(distances)
-    # plt.ylabel("Epsilon distance")
-    # plt.show()
     clustering = DBSCAN(eps=eps, min_samples=min_points, n_jobs=-1).fit(points)
     labels = clustering.labels_
-    
+
     unique_labels = set(labels)
     n_clusters = len(unique_labels) - (1 if -1 in labels else 0)
-    
+
     print(f"  Found {n_clusters} instances")
-    
+
     instances = []
     for label_id in unique_labels:
         if label_id == -1:
             continue
-        
+
         instance_mask = labels == label_id
         instance_points = points[instance_mask]
         instance_colors = colors[instance_mask]
-        
+
         instance_pcd = o3d.geometry.PointCloud()
         instance_pcd.points = o3d.utility.Vector3dVector(instance_points)
         instance_pcd.colors = o3d.utility.Vector3dVector(instance_colors)
-        
+
         instances.append(instance_pcd)
-    
+
     return instances
+
 
 def filter_small_instances(instances_dict, min_points_thresholds):
     cleaned_dict = {}
     print("\n--- CLEANING NOISE ---")
-    
+
     for class_name, instances in instances_dict.items():
         thresh = min_points_thresholds.get(class_name, 500)
-        
+
         valid_instances = []
-        for i, pcd in enumerate(instances):
+        for pcd in instances:
             n_points = len(pcd.points)
             if n_points >= thresh:
                 valid_instances.append(pcd)
-        
+
         cleaned_dict[class_name] = valid_instances
         removed = len(instances) - len(valid_instances)
         if removed > 0:
             print(f"  {class_name}: Removed {removed} small instances (<{thresh} pts)")
-            
+
     return cleaned_dict
 
+
 def save_instances(instances_dict, output_dir):
-    """
-    Save all instantiated point clouds to separate files.
-    """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     for class_name, instances in instances_dict.items():
         class_dir = output_path / class_name
         class_dir.mkdir(exist_ok=True)
-        
+
         for i, instance in enumerate(instances):
             filename = class_dir / f"{class_name}_instance_{i:03d}.ply"
             o3d.io.write_point_cloud(str(filename), instance)
-        
-    summary = {
-        class_name: len(instances) 
-        for class_name, instances in instances_dict.items()
-    }
-    
-    with open(output_path / "instantiation_summary.json", 'w') as f:
+
+    summary = {class_name: len(instances) for class_name, instances in instances_dict.items()}
+
+    with open(output_path / "instantiation_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
-    
+
     print(f"\nSummary saved to {output_path / 'instantiation_summary.json'}")
 
     combined_pc = o3d.geometry.PointCloud()
     for class_name, instances in instances_dict.items():
         for instance in instances:
-            combined_pc += instance   # merge point clouds
-    
+            combined_pc += instance
+
     combined_filename = output_path / "all_instances_combined.ply"
     o3d.io.write_point_cloud(str(combined_filename), combined_pc)
     print(f"Combined point cloud saved to {combined_filename}")
-    return combined_filename
 
-def maybe_downsample(pcd, voxel_size):
-    if voxel_size <= 0:
-        return pcd
-    return pcd.voxel_down_sample(voxel_size=voxel_size)
 
 def generate_distinct_colors(n_colors):
-    try: 
-        cmap = plt.colormaps['tab20']
+    try:
+        cmap = plt.colormaps["tab20"]
     except (AttributeError, KeyError):
-        cmap = plt.cm.get_cmap('tab20')
-    
+        cmap = plt.cm.get_cmap("tab20")
+
     colors = []
     for i in range(n_colors):
         rgba = cmap(i / max(n_colors, 1))
-        colors.append(rgba[:3]) 
+        colors.append(rgba[:3])
     return colors
 
+
+def is_visualization_disabled():
+    return os.environ.get("DISABLE_OPEN3D_VISUALIZER") == "1"
+
+
 def visualize_instances(instances_dict, show_by_class=True):
+    if is_visualization_disabled():
+        print("Skipping Open3D visualization because DISABLE_OPEN3D_VISUALIZER=1")
+        return
+
     if show_by_class:
         for class_name, instances in instances_dict.items():
             if len(instances) == 0:
                 continue
-            
+
             print(f"\nVisualizing {class_name} instances ({len(instances)} instances)...")
             instance_colors = generate_distinct_colors(len(instances))
             colored_instances = []
@@ -260,42 +201,60 @@ def visualize_instances(instances_dict, show_by_class=True):
                 instance_color = np.tile(instance_colors[i], (len(instance.points), 1))
                 colored_pcd.colors = o3d.utility.Vector3dVector(instance_color)
                 colored_instances.append(colored_pcd)
-            
-            o3d.visualization.draw_geometries(colored_instances,
-                                            window_name=f"{class_name} - {len(instances)} Instances",
-                                            width=1024, height=768)
+
+            o3d.visualization.draw_geometries(
+                colored_instances,
+                window_name=f"{class_name} - {len(instances)} Instances",
+                width=1024,
+                height=768,
+            )
     else:
         print("\nVisualizing all instances from all classes...")
         all_colored_instances = []
         for class_name, instances in instances_dict.items():
-            if len(instances) == 0: continue
+            if len(instances) == 0:
+                continue
             instance_colors = generate_distinct_colors(len(instances))
             for i, instance in enumerate(instances):
                 colored_pcd = o3d.geometry.PointCloud(instance)
                 instance_color = np.tile(instance_colors[i], (len(instance.points), 1))
                 colored_pcd.colors = o3d.utility.Vector3dVector(instance_color)
                 all_colored_instances.append(colored_pcd)
-        
+
         if all_colored_instances:
-            o3d.visualization.draw_geometries(all_colored_instances,
-                                            window_name=f"All Instances",
-                                            width=1024, height=768)
+            o3d.visualization.draw_geometries(
+                all_colored_instances,
+                window_name="All Instances",
+                width=1024,
+                height=768,
+            )
+
 
 def visualize_summary(instances_dict, separated_classes, original_pcd):
+    if is_visualization_disabled():
+        print("Skipping Open3D visualization because DISABLE_OPEN3D_VISUALIZER=1")
+        return
+
     print("\n" + "=" * 60)
     print("VISUALIZATION MODE")
     print("=" * 60)
-    
+
     if separated_classes:
-        o3d.visualization.draw_geometries(list(separated_classes.values()), window_name="Semantic Classes", width=800, height=600)
-    
+        o3d.visualization.draw_geometries(
+            list(separated_classes.values()),
+            window_name="Semantic Classes",
+            width=800,
+            height=600,
+        )
+
     if instances_dict:
         visualize_instances(instances_dict, show_by_class=False)
 
     print("\n" + "=" * 60)
     response = input("Would you like to see all instances from all classes separately? (y/n): ")
-    if response.lower() == 'y':
+    if response.lower() == "y":
         visualize_instances(instances_dict, show_by_class=True)
+
 
 def finetune_model(checkpoint_path, device, num_old_classes, num_new_classes):
     state_old = torch.load(checkpoint_path, map_location=device)
@@ -309,7 +268,7 @@ def finetune_model(checkpoint_path, device, num_old_classes, num_new_classes):
             transferred.append(k)
         else:
             skipped.append(k)
-    
+
     if skipped:
         print("Skipped parameters:")
         for k in skipped:
@@ -321,6 +280,7 @@ def finetune_model(checkpoint_path, device, num_old_classes, num_new_classes):
 
     return model_new
 
+
 def build_models(checkpoint_paths, device, num_classes=7):
     models = []
     for ckpt in checkpoint_paths:
@@ -330,41 +290,24 @@ def build_models(checkpoint_paths, device, num_classes=7):
         models.append(model)
     return models
 
-# def voxelize_points(points, cube_edge):
-#     points_centered = points - points.mean(axis=0)
-    
-#     max_val = np.abs(points_centered).max() + 1e-8
-#     points_norm = points_centered / max_val
-    
-#     points_shifted = points_norm + 1.0
-    
-#     scale_factor = cube_edge // 2
-#     points_grid = np.round(points_shifted * scale_factor).astype(np.int32)
-    
-#     points_grid = np.clip(points_grid, 0, cube_edge - 1)
-
-#     vox = np.zeros((1, cube_edge, cube_edge, cube_edge), dtype=np.float32)
-#     vox[0, points_grid[:, 0], points_grid[:, 1], points_grid[:, 2]] = 1.0
-
-#     return vox, points_grid
 
 def voxelize_points(points, cube_edge):
     points_centered = points - points.mean(axis=0)
-    
+
     points_centered[:, 2] -= points_centered[:, 2].min()
-    
+
     ranges = points_centered.max(axis=0) - points_centered.min(axis=0)
     max_dim = ranges.max() + 1e-6
     scale_factor = 1.8 / max_dim
-    
-    points_norm = points_centered * scale_factor
-    
-    points_shifted = points_norm 
-    points_shifted[:, 2] -= 0.9 
 
-    points_shifted += 1.0 
+    points_norm = points_centered * scale_factor
+
+    points_shifted = points_norm
+    points_shifted[:, 2] -= 0.9
+
+    points_shifted += 1.0
     points_grid = np.round(points_shifted * (cube_edge // 2)).astype(np.int32)
-    
+
     points_grid = np.clip(points_grid, 0, cube_edge - 1)
 
     vox = np.zeros((1, cube_edge, cube_edge, cube_edge), dtype=np.float32)
@@ -372,11 +315,13 @@ def voxelize_points(points, cube_edge):
 
     return vox, points_grid
 
+
 def color_label(labels, num_classes=7):
     cmap = plt.get_cmap("tab20", num_classes)
     flat = labels.flatten()
-    colors = cmap(flat % num_classes)[:, :3] 
+    colors = cmap(flat % num_classes)[:, :3]
     return colors.reshape((*labels.shape, 3))
+
 
 def run_bimnet_inference(pcd, models, cube_edge=96, num_classes=7, device="cuda"):
     points = np.asarray(pcd.points)
@@ -397,198 +342,127 @@ def run_bimnet_inference(pcd, models, cube_edge=96, num_classes=7, device="cuda"
     point_labels = preds[points_grid[:, 0], points_grid[:, 1], points_grid[:, 2]]
 
     pcd.colors = o3d.utility.Vector3dVector(point_colors)
-    
+
     return pcd, preds, points_grid, point_labels
 
+
 def instantiate_planar_iterative(pcd, class_name, dist_thresh=0.20, min_points=500):
-    """
-    Separates planar instances (Walls/Floors) by iteratively finding planes 
-    and removing them from the cloud until no valid planes remain.
-    UPDATED: dist_thresh increased to 0.20 to fix fragmented walls.
-    """
     remaining_pcd = pcd
     instances = []
-    
+
     print(f"\nIterative RANSAC for {class_name} (Thresh={dist_thresh})...")
-    
+
     while len(remaining_pcd.points) > min_points:
         points = np.asarray(remaining_pcd.points)
 
         plane = pyrsc.Plane()
-        best_eq, inliers = plane.fit(points, thresh=dist_thresh, minPoints=100, maxIteration=1000)
-        
+        _, inliers = plane.fit(points, thresh=dist_thresh, minPoints=100, maxIteration=1000)
+
         if len(inliers) < min_points:
             break
 
         inst_pcd = remaining_pcd.select_by_index(inliers)
-        inst_pcd.paint_uniform_color(generate_distinct_colors(len(instances)+1)[-1])
+        inst_pcd.paint_uniform_color(generate_distinct_colors(len(instances) + 1)[-1])
         instances.append(inst_pcd)
 
         remaining_pcd = remaining_pcd.select_by_index(inliers, invert=True)
         print(f"  Found instance {len(instances)}: {len(inliers)} points. Remaining: {len(remaining_pcd.points)}")
-        
-    return instances
-'''
-def extract_bim_parameters(instances_dict):
-    """
-    Calculates BIM-ready parameters (Length, Height, Thickness, Centerline) 
-    for each wall instance.
-    """
-    bim_data = []
-    
-    for class_name, pcd_list in instances_dict.items():
-        for idx, pcd in enumerate(pcd_list):
-            pts = np.asarray(pcd.points)
-            if len(pts) < 50: continue
 
-            z_min, z_max = pts[:, 2].min(), pts[:, 2].max()
-            height = z_max - z_min
-            
-            if class_name in ["floor", "ceiling"]:
-                    x_min, x_max = pts[:, 0].min(), pts[:, 0].max()
-                    y_min, y_max = pts[:, 1].min(), pts[:, 1].max()
-                    
-                    bim_obj = {
-                        "id": f"{class_name}_{idx}",
-                        "type": class_name,
-                        "height": float(height), 
-                        "thickness": 0.2, 
-                        "geometry": {
-                            "start_x": float(x_min), "start_y": float(y_min), "start_z": float(z_min),
-                            "end_x": float(x_max), "end_y": float(y_max), "end_z": float(z_min)
-                        }
-                    }
-            else:
-                xy_pts = pts[:, :2]
-                from sklearn.decomposition import PCA
-                pca = PCA(n_components=2)
-                pca.fit(xy_pts)
-                
-                direction = pca.components_[0] 
-                center = xy_pts.mean(axis=0)
-                
-                projected = xy_pts @ direction
-                p_min, p_max = projected.min(), projected.max()
-                
-                start_pt = center + direction * (p_min - projected.mean())
-                end_pt = center + direction * (p_max - projected.mean())
-                
-                bim_obj = {
-                    "id": f"{class_name}_{idx}",
-                    "type": class_name,
-                    "height": float(height),
-                    "thickness": 0.2, 
-                    "geometry": {
-                        "start_x": float(start_pt[0]), "start_y": float(start_pt[1]), "start_z": float(z_min),
-                        "end_x": float(end_pt[0]), "end_y": float(end_pt[1]), "end_z": float(z_min)
-                    }
-                }
-                    
-            bim_data.append(bim_obj)
-            
-    return bim_data
-'''
+    return instances
+
+
 def extract_bim_parameters(instances_dict):
-    """
-    Calculates BIM-ready parameters (Length, Height, Thickness, Centerline) 
-    for each wall instance.
-    """
     bim_data = []
-    
+
     for class_name, pcd_list in instances_dict.items():
         for idx, pcd in enumerate(pcd_list):
             pts = np.asarray(pcd.points)
-            if len(pts) < 50: continue
+            if len(pts) < 50:
+                continue
             x_min, x_max = pts[:, 0].min(), pts[:, 0].max()
             y_min, y_max = pts[:, 1].min(), pts[:, 1].max()
             z_min, z_max = pts[:, 2].min(), pts[:, 2].max()
             height = z_max - z_min
             thickness = 0.2
             bim_obj = {
-                        "id": f"{class_name}_{idx}",
-                        "type": class_name,
-                        "height": float(height), 
-                        "thickness": float(thickness), 
-                        "geometry": {
-                            "start_x": float(x_min), "start_y": float(y_min), "start_z": float(z_min),
-                            "end_x": float(x_max), "end_y": float(y_max), "end_z": float(z_min)
-                        }
-                    }
+                "id": f"{class_name}_{idx}",
+                "type": class_name,
+                "height": float(height),
+                "thickness": float(thickness),
+                "geometry": {
+                    "start_x": float(x_min),
+                    "start_y": float(y_min),
+                    "start_z": float(z_min),
+                    "end_x": float(x_max),
+                    "end_y": float(y_max),
+                    "end_z": float(z_min),
+                },
+            }
 
             if class_name == "floor":
                 bim_obj["geometry"]["start_z"] = float(z_min)
                 bim_obj["geometry"]["end_z"] = float(z_min)
             elif class_name == "ceiling":
-                bim_obj["geometry"]["start_z"] = float(z_min/2)
-                bim_obj["geometry"]["end_z"] = float(z_min/2)
+                bim_obj["geometry"]["start_z"] = float(z_min / 2)
+                bim_obj["geometry"]["end_z"] = float(z_min / 2)
             else:
                 xy_pts = pts[:, :2]
                 from sklearn.decomposition import PCA
+
                 pca = PCA(n_components=2)
                 pca.fit(xy_pts)
-                
-                direction = pca.components_[0] 
+
+                direction = pca.components_[0]
                 center = xy_pts.mean(axis=0)
-                
+
                 projected = xy_pts @ direction
                 p_min, p_max = projected.min(), projected.max()
-                
+
                 start_pt = center + direction * (p_min - projected.mean())
                 end_pt = center + direction * (p_max - projected.mean())
-                
+
                 bim_obj["geometry"]["start_x"] = float(start_pt[0])
                 bim_obj["geometry"]["end_x"] = float(end_pt[0])
                 bim_obj["geometry"]["start_y"] = float(start_pt[1])
                 bim_obj["geometry"]["end_y"] = float(end_pt[1])
                 bim_obj["geometry"]["start_z"] = float(z_min)
                 bim_obj["geometry"]["end_z"] = float(z_min)
-                    
+
             bim_data.append(bim_obj)
-            
+
     return bim_data
+
+
 def main(
     input_file,
     output_dir="output_instances",
     checkpoint_paths=None,
     cube_edge=96,
-    num_classes=8,
+    num_classes=7,
     device=None,
     visualize_network_output=False,
     visualize_instances_flag=False,
-    output_name="all_instances_combined.ply",
-    voxel_size=0.02,
 ):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint_paths = checkpoint_paths or []
-    
+    checkpoint_paths = checkpoint_paths
+
     print("=" * 60)
     print("Point Cloud Instantiation Workflow (BIMNet + DBSCAN)")
     print("=" * 60)
 
     input_path = Path(input_file)
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
     pcd = load_point_cloud(input_path)
 
     print("\nLoading BIMNet models...")
     models = build_models(checkpoint_paths, device, num_classes=num_classes)
 
-    print("\nRunning BIMNet inference...")
-    pcd, _preds_volume, _points_grid, point_labels = run_bimnet_inference(
+    pcd, preds_volume, points_grid, point_labels = run_bimnet_inference(
         pcd, models, cube_edge=cube_edge, num_classes=num_classes, device=device
     )
 
-    point_count = len(pcd.points)
-    if point_count > 500000:
-        print(
-            f"\nStep 0.5: Skipping KNN smoothing because point count "
-            f"({point_count}) exceeds 500000."
-        )
-        print("Use a higher threshold in code if you need to force smoothing.")
-    else:
-        print("\nStep 0.5: Smoothing predictions with KNN (k=15)...")
-        point_labels = smooth_labels_knn(pcd, point_labels, k=15)
-    
+    print("\nStep 0.5: Smoothing predictions with KNN...")
+    point_labels = smooth_labels_knn(pcd, point_labels, k=5)
+
     print("\nStep 1: Separating point cloud by semantic class...")
     separated_classes = separate_by_label(pcd, point_labels)
 
@@ -599,93 +473,72 @@ def main(
     print("\nStep 2: Instantiating classes...")
     all_instances = {}
 
-    planar_classes = ['wall', 'floor', 'ceiling']
-    
-    dbscan_params = {
-        'beam': {'eps': 0.1, 'min_points': 150},
-        'column': {'eps': 0.1, 'min_points': 125},
-        'window': {'eps': 0.05, 'min_points': 150},
-        'door': {'eps': 0.07, 'min_points': 200},
-        'unassigned': {'eps': 0.05, 'min_points': 200},
-    }
+    planar_classes = ["wall", "floor", "ceiling"]
 
-    print("Applying strong smoothing (KNN, k=15)...")
-    point_labels = smooth_labels_knn(pcd, point_labels, k=15)
-    separated_classes = separate_by_label(pcd, point_labels)
+    dbscan_params = {
+        "beam": {"eps": 0.3, "min_points": 100},
+        "column": {"eps": 0.3, "min_points": 100},
+        "window": {"eps": 0.2, "min_points": 50},
+        "door": {"eps": 0.3, "min_points": 100},
+    }
 
     for class_name, class_pcd in separated_classes.items():
         if class_name in planar_classes:
-            instances = instantiate_planar_iterative(class_pcd, class_name, dist_thresh=0.15, min_points=2000)
+            instances = instantiate_planar_iterative(class_pcd, class_name, dist_thresh=0.1)
         else:
-            params = dbscan_params.get(class_name, {'eps': 0.1, 'min_points': 100})
+            params = dbscan_params.get(class_name, {"eps": 0.3, "min_points": 100})
             instances = instantiate_with_dbscan(
                 class_pcd,
                 class_name,
-                eps=params['eps'],
-                min_points=params['min_points'],
+                eps=params["eps"],
+                min_points=params["min_points"],
             )
         all_instances[class_name] = instances
 
     cleaning_thresholds = {
-        'ceiling': 2000,
-        'floor': 2000,
-        'wall': 1000,
-        'beam': 500,
-        'column': 500,
-        'door': 500,
-        'window': 200,
+        "ceiling": 2000,
+        "floor": 2000,
+        "wall": 1000,
+        "beam": 50,
+        "column": 50,
+        "window": 20,
+        "door": 50,
     }
 
     all_instances = filter_small_instances(all_instances, cleaning_thresholds)
 
     print("\nStep 3: Extracting BIM Parameters and Saving...")
-    if voxel_size > 0:
-        for class_name, instances in all_instances.items():
-            all_instances[class_name] = [maybe_downsample(instance, voxel_size) for instance in instances]
+    save_instances(all_instances, output_dir)
 
-    combined_path = save_instances(all_instances, output_path)
-    if output_name != "all_instances_combined.ply":
-        custom_combined_path = output_path / output_name
-        if custom_combined_path != combined_path:
-            o3d.io.write_point_cloud(str(custom_combined_path), o3d.io.read_point_cloud(str(combined_path)))
-            combined_path = custom_combined_path
-            print(f"Combined point cloud saved to {combined_path}")
-    
     bim_json_data = extract_bim_parameters(all_instances)
-    with open(output_path / "bim_reconstruction_data.json", "w") as f:
+    with open(Path(output_dir) / "bim_reconstruction_data.json", "w") as f:
         json.dump(bim_json_data, f, indent=4)
-    print(f"BIM parameters saved to {output_path / 'bim_reconstruction_data.json'}")
+    print(f"BIM parameters saved to {output_dir}/bim_reconstruction_data.json")
 
     if visualize_instances_flag:
         visualize_summary(all_instances, separated_classes, pcd)
 
-    print(f"Run output directory: {output_path}")
-    print(f"Combined output: {combined_path}")
-    return 0
+    return all_instances, separated_classes, pcd
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="BIMNet semantic segmentation + DBSCAN instance extraction"
     )
-    parser.add_argument("--input_file", required=True, help="Path to input point cloud (.ply/.pcd)")
-    parser.add_argument("--output_dir", required=True, help="Directory to save instance PLYs")
+    parser.add_argument("--input_file", help="Path to input point cloud (.ply/.pcd)")
+    parser.add_argument("--output_dir", default="output_instances", help="Directory to save instance PLYs")
     parser.add_argument("--checkpoint", action="append", default=[], help="Path(s) to BIMNet checkpoint(s)")
     parser.add_argument("--cube_edge", type=int, default=96, help="Voxel grid edge length")
-    parser.add_argument("--num_classes", type=int, default=8, help="Number of BIMNet output classes")
-    parser.add_argument("--output_name", default="all_instances_combined.ply", help="Combined output filename")
-    parser.add_argument("--voxel_size", type=float, default=0.02, help="Downsample voxel size (0 to disable)")
+    parser.add_argument("--num_classes", type=int, default=7, help="Number of BIMNet output classes")
     parser.add_argument("--cpu", action="store_true", help="Force CPU")
     parser.add_argument("--vis-net", action="store_true", help="Visualize BIMNet output")
     parser.add_argument("--vis-instances", action="store_true", help="Visualize DBSCAN instances")
-    
-    args = parser.parse_args()
-    if not args.checkpoint:
-        print("Error: At least one --checkpoint is required")
-        sys.exit(1)
+    parser.add_argument("--no-vis-instances", action="store_true", help="Disable instance visualization")
 
+    args = parser.parse_args()
     device = "cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu")
 
-    sys.exit(main(
+    main(
         input_file=args.input_file,
         output_dir=args.output_dir,
         checkpoint_paths=args.checkpoint,
@@ -693,7 +546,5 @@ if __name__ == "__main__":
         num_classes=args.num_classes,
         device=device,
         visualize_network_output=args.vis_net,
-        visualize_instances_flag=args.vis_instances,
-        output_name=args.output_name,
-        voxel_size=args.voxel_size,
-    ))
+        visualize_instances_flag=args.vis_instances and not args.no_vis_instances,
+    )

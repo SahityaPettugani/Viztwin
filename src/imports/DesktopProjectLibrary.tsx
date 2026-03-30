@@ -15,6 +15,7 @@ interface Project {
   title: string;
   date: string;
   image: string;
+  buildingType?: string;
   pointCloudRawUrl?: string;
   pointCloudSemanticUrl?: string;
   pointCloudInstancedUrl?: string;
@@ -163,6 +164,7 @@ export default function DesktopProjectLibrary({
     bimProps?: string;
   } | undefined>(undefined);
   const [selectedTitle, setSelectedTitle] = useState<string>('');
+  const [selectedBuildingType, setSelectedBuildingType] = useState<string | undefined>(undefined);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
   const [isSortOpen, setIsSortOpen] = useState(false);
@@ -206,6 +208,7 @@ export default function DesktopProjectLibrary({
   const handleProjectClick = (
     image: string,
     title: string,
+    buildingType?: string,
     urls?: {
       raw?: string;
       semantic?: string;
@@ -217,6 +220,7 @@ export default function DesktopProjectLibrary({
   ) => {
     setSelectedProject(image);
     setSelectedTitle(title);
+    setSelectedBuildingType(buildingType);
     setSelectedPointCloud(urls);
   };
 
@@ -251,7 +255,7 @@ export default function DesktopProjectLibrary({
             date={project.date}
             left={position.left}
             top={position.top}
-            onClick={() => handleProjectClick(project.image || img59L6StudyRoomBasePicture1, project.title, {
+            onClick={() => handleProjectClick(project.image || img59L6StudyRoomBasePicture1, project.title, project.buildingType, {
               raw: project.pointCloudRawUrl,
               semantic: project.pointCloudSemanticUrl,
               instanced: project.pointCloudInstancedUrl,
@@ -331,16 +335,17 @@ export default function DesktopProjectLibrary({
       {selectedProject && (
         <ModelViewer
           projectTitle={selectedTitle}
+          buildingType={selectedBuildingType}
           onClose={() => {
             setSelectedProject(null);
             setSelectedTitle('');
+            setSelectedBuildingType(undefined);
             setSelectedPointCloud(undefined);
           }}
           onNavigateHome={onNavigateHome}
           onNavigateGetStarted={onNavigateGetStarted}
           onNavigateLibrary={onNavigateLibrary}
           rawPointCloudUrl={selectedPointCloud?.raw}
-          semanticPointCloudUrl={selectedPointCloud?.semantic}
           instancedPointCloudUrl={selectedPointCloud?.instanced}
           bimModelUrl={selectedPointCloud?.bim}
           bimIfcUrl={selectedPointCloud?.bimIfc}
