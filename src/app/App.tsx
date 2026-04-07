@@ -10,6 +10,7 @@ import OverlayUploadedPage from '../imports/OverlayUploadedPage';
 import AuthScreen from './components/AuthScreen';
 import {
   createProject,
+  deleteProject,
   listProjects,
   type ProcessPointCloudResult,
   type Project,
@@ -44,6 +45,7 @@ export default function App() {
   const [uploadError, setUploadError] = useState('');
   const [formData, setFormData] = useState<ProjectFormData>(emptyFormData);
   const [processingStage, setProcessingStage] = useState<'uploading' | 'processing' | 'complete'>('uploading');
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const uploadAbortController = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -241,6 +243,25 @@ export default function App() {
     resetUploadState();
   };
 
+  const handleDeleteProject = async (projectId: string) => {
+    if (!user) {
+      alert('Please log in before deleting a project.');
+      return;
+    }
+
+    setDeletingProjectId(projectId);
+    try {
+      await deleteProject(projectId, user.id);
+      setProjects((prev) => prev.filter((project) => project.id !== projectId));
+    } catch (error) {
+      console.error('Failed to delete project:', error);
+      alert(`Failed to delete project: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw error;
+    } finally {
+      setDeletingProjectId((current) => (current === projectId ? null : current));
+    }
+  };
+
   if (!authReady) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#f5f5f5]">
@@ -281,6 +302,8 @@ export default function App() {
           onNavigateLibrary={handleNavigateToLibrary}
           onOpenUpload={handleOpenUpload}
           projects={projects}
+          deletingProjectId={deletingProjectId}
+          onDeleteProject={handleDeleteProject}
           authButtonLabel={authButtonLabel}
           onAuthButtonClick={handleSignOut}
         />

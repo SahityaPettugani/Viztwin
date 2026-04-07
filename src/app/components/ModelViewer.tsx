@@ -10,7 +10,10 @@ type ViewPreset = 'all' | 'top' | 'bottom' | 'left' | 'right' | 'front' | 'back'
 interface ModelViewerProps {
   projectTitle: string;
   buildingType?: string;
+  canDeleteProject?: boolean;
+  isDeletingProject?: boolean;
   onClose: () => void;
+  onDeleteProject?: () => Promise<void> | void;
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
   onNavigateLibrary: () => void;
@@ -1003,7 +1006,10 @@ function ThreeScene({
 export default function ModelViewer({
   projectTitle,
   buildingType,
+  canDeleteProject,
+  isDeletingProject,
   onClose,
+  onDeleteProject,
   onNavigateHome,
   onNavigateGetStarted,
   onNavigateLibrary,
@@ -1040,6 +1046,18 @@ export default function ModelViewer({
   const [elementVisibility, setElementVisibility] = useState<Record<string, boolean>>({});
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const uploadedFileName = getUploadedFileNameFromUrl(rawPointCloudUrl);
+
+  const handleDeleteClick = async () => {
+    if (!onDeleteProject || isDeletingProject) {
+      return;
+    }
+
+    try {
+      await onDeleteProject();
+    } catch {
+      // Deletion errors are handled by the caller.
+    }
+  };
 
   useEffect(() => {
     setExpandedCategories((current) => {
@@ -1552,6 +1570,16 @@ export default function ModelViewer({
                   IFC file unavailable for this project.
                 </div>
               )}
+              {canDeleteProject ? (
+                <button
+                  type="button"
+                  onClick={handleDeleteClick}
+                  disabled={isDeletingProject}
+                  className="mt-[0.83vw] inline-flex w-full items-center justify-center rounded-[0.62vw] border border-[#f0c7c7] bg-[#fff1f1] px-[0.94vw] py-[0.72vw] font-['Satoshi_Variable:Bold',sans-serif] text-[0.88vw] text-[#b42318] transition-colors hover:bg-[#fde7e7] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isDeletingProject ? 'Deleting Project...' : 'Delete Project'}
+                </button>
+              ) : null}
             </div>
 
             <h2 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.25vw] text-[#000001] mb-[1.56vw]">
