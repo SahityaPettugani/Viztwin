@@ -316,12 +316,16 @@ def main():
                 ifc_model.create_rel_voids_element(ifc_wall, wall_opening)
         elif el_type == 'floor':
             geometry = element.get('geometry', {})
-            points = [
-                [float(geometry['start_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['end_y'])],
-                [float(geometry['start_x']), float(geometry['end_y'])]
-            ]
+            polygon = geometry.get('polygon')
+            if polygon:
+                points = [list(as_float_pair(p, "floor.geometry.polygon[]")) for p in polygon]
+            else:
+                points = [
+                    [float(geometry['start_x']), float(geometry['start_y'])],
+                    [float(geometry['end_x']), float(geometry['start_y'])],
+                    [float(geometry['end_x']), float(geometry['end_y'])],
+                    [float(geometry['start_x']), float(geometry['end_y'])]
+                ]
             slab_z = float(geometry.get('start_z', 0.0))
             slab_height = float(element.get('height', 0.2))
             material = element.get('material', material_for_objects)
@@ -331,12 +335,16 @@ def main():
                 ifc_model.assign_product_to_storey(ifc_slab, storeys_ifc[storey_number - 1])
         elif el_type == 'ceiling':
             geometry = element.get('geometry', {})
-            points = [
-                [float(geometry['start_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['end_y'])],
-                [float(geometry['start_x']), float(geometry['end_y'])]
-            ]
+            polygon = geometry.get('polygon')
+            if polygon:
+                points = [list(as_float_pair(p, "ceiling.geometry.polygon[]")) for p in polygon]
+            else:
+                points = [
+                    [float(geometry['start_x']), float(geometry['start_y'])],
+                    [float(geometry['end_x']), float(geometry['start_y'])],
+                    [float(geometry['end_x']), float(geometry['end_y'])],
+                    [float(geometry['start_x']), float(geometry['end_y'])]
+                ]
             z_elev = float(geometry.get('start_z', 0.0))
             height = float(element.get('height', 0.2))
             material = element.get('material', material_for_objects)

@@ -46,6 +46,43 @@ def load_point_cloud(file_path):
     print(f"Loaded {len(pcd.points)} points")
     return pcd
 
+def get_device_point_budget(device):
+    if device == "cpu":
+        return 350000
+
+    if device.startswith("cuda") and torch.cuda.is_available():
+        try:
+            total_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            if total_memory_gb < 6:
+                return 450000
+            if total_memory_gb < 8:
+                return 650000
+            return 900000
+        except Exception:
+            return 700000
+
+    return 500000
+
+def auto_downsample_for_device(pcd, device):
+    point_count = len(pcd.points)
+    point_budget = get_device_point_budget(device)
+    if point_count <= point_budget:
+        print(f"Auto-downsampling skipped: {point_count} points within {device} budget ({point_budget}).")
+        return pcd, False
+
+    stride = max(2, int(np.ceil(point_count / point_budget)))
+    print(
+        f"Auto-downsampling for {device}: reducing {point_count} points "
+        f"toward budget {point_budget} using every {stride}th point."
+    )
+    reduced = pcd.uniform_down_sample(stride)
+    if len(reduced.points) < 1000:
+        print("Auto-downsampling skipped: reduced cloud would be too small.")
+        return pcd, False
+
+    print(f"Downsampled to {len(reduced.points)} points for {device} processing.")
+    return reduced, True
+
 def rotation_matrix_from_vectors(source, target):
     source = np.asarray(source, dtype=np.float64)
     target = np.asarray(target, dtype=np.float64)
@@ -1281,6 +1318,139 @@ def build_wall_reference_lines(instances_dict, footprint):
         })
     return refs
 
+def compute_oriented_room_polygon(wall_refs, footprint):
+    if not wall_refs:
+        if footprint is None:
+            return None
+        return [
+            [footprint['min_x'], footprint['min_y']],
+            [footprint['max_x'], footprint['min_y']],
+            [footprint['max_x'], footprint['max_y']],
+            [footprint['min_x'], footprint['max_y']],
+        ]
+
+    longest_ref = max(wall_refs, key=lambda ref: line_length_xy(ref['start'], ref['end']))
+    primary = np.asarray(longest_ref['direction'], dtype=np.float32)
+    primary = primary / (np.linalg.norm(primary) + 1e-8)
+    secondary = np.array([-primary[1], primary[0]], dtype=np.float32)
+
+    points = []
+    for ref in wall_refs:
+        points.append(np.asarray(ref['start'], dtype=np.float32))
+        points.append(np.asarray(ref['end'], dtype=np.float32))
+
+    pts = np.vstack(points)
+    origin = np.mean(pts, axis=0)
+    rel = pts - origin
+    proj_primary = rel @ primary
+    proj_secondary = rel @ secondary
+
+    min_u = float(np.min(proj_primary))
+    max_u = float(np.max(proj_primary))
+    min_v = float(np.min(proj_secondary))
+    max_v = float(np.max(proj_secondary))
+
+    corners = [
+        origin + primary * min_u + secondary * min_v,
+        origin + primary * max_u + secondary * min_v,
+        origin + primary * max_u + secondary * max_v,
+        origin + primary * min_u + secondary * max_v,
+    ]
+    return [[float(c[0]), float(c[1])] for c in corners]
+
+def get_room_axes_from_polygon(room_polygon):
+    if not room_polygon or len(room_polygon) < 4:
+        return None
+
+    corners = [np.asarray(point, dtype=np.float32) for point in room_polygon[:4]]
+    edge_a = corners[1] - corners[0]
+    edge_b = corners[3] - corners[0]
+    if np.linalg.norm(edge_b) > np.linalg.norm(edge_a):
+        primary = edge_b
+        secondary = edge_a
+    else:
+        primary = edge_a
+        secondary = edge_b
+
+    primary = primary / (np.linalg.norm(primary) + 1e-8)
+    secondary = secondary / (np.linalg.norm(secondary) + 1e-8)
+    origin = np.mean(np.vstack(corners), axis=0)
+    rel = np.vstack(corners) - origin
+    proj_primary = rel @ primary
+    proj_secondary = rel @ secondary
+    return {
+        'origin': origin,
+        'primary': primary,
+        'secondary': secondary,
+        'min_u': float(np.min(proj_primary)),
+        'max_u': float(np.max(proj_primary)),
+        'min_v': float(np.min(proj_secondary)),
+        'max_v': float(np.max(proj_secondary)),
+    }
+
+def get_room_edges_from_polygon(room_polygon):
+    if not room_polygon or len(room_polygon) < 4:
+        return []
+    corners = [np.asarray(point, dtype=np.float32) for point in room_polygon[:4]]
+    edges = []
+    for idx in range(4):
+        start = corners[idx]
+        end = corners[(idx + 1) % 4]
+        direction = end - start
+        length = np.linalg.norm(direction)
+        if length < 1e-8:
+            continue
+        direction = direction / length
+        center = 0.5 * (start + end)
+        normal = np.array([-direction[1], direction[0]], dtype=np.float32)
+        edges.append({
+            'start': start,
+            'end': end,
+            'direction': direction,
+            'normal': normal,
+            'center': center,
+            'length': float(length),
+        })
+    return edges
+
+def snap_wall_line_to_room_edges(line, room_edges):
+    if not room_edges:
+        return np.asarray(line['start'], dtype=np.float32), np.asarray(line['end'], dtype=np.float32)
+
+    start = np.asarray(line['start'], dtype=np.float32)
+    end = np.asarray(line['end'], dtype=np.float32)
+    center = 0.5 * (start + end)
+    direction = np.asarray(line['direction'], dtype=np.float32)
+    direction = direction / (np.linalg.norm(direction) + 1e-8)
+
+    def edge_score(edge):
+        alignment = abs(float(np.dot(direction, edge['direction'])))
+        if alignment < 0.75:
+            return float('inf')
+        lateral = abs(float(np.dot(center - edge['center'], edge['normal'])))
+        return lateral + (1.0 - alignment) * 0.2
+
+    edge = min(room_edges, key=edge_score)
+    if not np.isfinite(edge_score(edge)):
+        return start, end
+
+    edge_start = edge['start']
+    edge_dir = edge['direction']
+    edge_len = edge['length']
+    start_u = float(np.dot(start - edge_start, edge_dir))
+    end_u = float(np.dot(end - edge_start, edge_dir))
+    u_min = max(0.0, min(start_u, end_u))
+    u_max = min(edge_len, max(start_u, end_u))
+    if u_max - u_min < 1e-3:
+        u_center = float(np.dot(center - edge_start, edge_dir))
+        half_len = max(line_length_xy(start, end) * 0.5, 0.05)
+        u_min = max(0.0, u_center - half_len)
+        u_max = min(edge_len, u_center + half_len)
+
+    snapped_start = edge_start + edge_dir * u_min
+    snapped_end = edge_start + edge_dir * u_max
+    return snapped_start.astype(np.float32), snapped_end.astype(np.float32)
+
 def snap_linear_instance_to_wall(start_xy, end_xy, wall_refs):
     if not wall_refs:
         return start_xy, end_xy
@@ -1311,6 +1481,8 @@ def extract_bim_parameters(instances_dict):
     room_footprint = compute_room_footprint(instances_dict)
     wall_refs = select_perimeter_wall_refs(instances_dict, room_footprint)
     instances_dict = filter_instances_to_wall_refs(instances_dict, wall_refs)
+    room_polygon = compute_oriented_room_polygon(wall_refs, room_footprint)
+    room_edges = get_room_edges_from_polygon(room_polygon)
 
     for class_name, pcd_list in instances_dict.items():
         for idx, pcd in enumerate(pcd_list):
@@ -1387,6 +1559,8 @@ def extract_bim_parameters(instances_dict):
                     bim_obj['geometry']['start_y'] = room_footprint['min_y']
                     bim_obj['geometry']['end_x'] = room_footprint['max_x']
                     bim_obj['geometry']['end_y'] = room_footprint['max_y']
+                if room_polygon is not None:
+                    bim_obj['geometry']['polygon'] = room_polygon
                 bim_obj['geometry']['start_z'] = global_floor_z
                 bim_obj['geometry']['end_z'] = global_floor_z
             elif class_name == 'ceiling':
@@ -1395,12 +1569,14 @@ def extract_bim_parameters(instances_dict):
                     bim_obj['geometry']['start_y'] = room_footprint['min_y']
                     bim_obj['geometry']['end_x'] = room_footprint['max_x']
                     bim_obj['geometry']['end_y'] = room_footprint['max_y']
+                if room_polygon is not None:
+                    bim_obj['geometry']['polygon'] = room_polygon
                 bim_obj['geometry']['start_z'] = global_ceiling_z
                 bim_obj['geometry']['end_z'] = global_ceiling_z
             elif class_name == 'wall':
                 xy_pts = pts[:, :2]
                 line = oriented_line_from_wall_points(xy_pts)
-                wall_start, wall_end = clamp_wall_line_to_room(line, room_footprint)
+                wall_start, wall_end = snap_wall_line_to_room_edges(line, room_edges)
                 bim_obj['height'] = float(room_height)
                 bim_obj['thickness'] = float(min(max(line['thickness'], 0.08), 0.35))
                 bim_obj['geometry']['start_z'] = global_floor_z
@@ -1438,6 +1614,7 @@ def main(
     pcd = load_point_cloud(input_path)
     if align_z_up:
         pcd, _ = align_point_cloud_z_up(pcd)
+    pcd, _ = auto_downsample_for_device(pcd, device)
     auto_config = auto_tune_parameters(pcd)
 
     if smoothing_k is None:
