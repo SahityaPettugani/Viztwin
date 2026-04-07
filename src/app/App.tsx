@@ -10,6 +10,7 @@ import OverlayUploadedPage from '../imports/OverlayUploadedPage';
 import AuthScreen from './components/AuthScreen';
 import {
   createProject,
+  deleteProject,
   listProjects,
   type ProcessPointCloudResult,
   type Project,
@@ -41,6 +42,7 @@ export default function App() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState('');
   const [formData, setFormData] = useState<ProjectFormData>(emptyFormData);
   const [processingStage, setProcessingStage] = useState<'uploading' | 'processing' | 'complete'>('uploading');
@@ -241,6 +243,25 @@ export default function App() {
     resetUploadState();
   };
 
+  const handleDeleteProject = async (project: Project) => {
+    const confirmed = window.confirm(`Delete "${project.title}"? This will remove the project and its stored files.`);
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingProjectId(project.id);
+    try {
+      await deleteProject(project);
+      setProjects((prev) => prev.filter((item) => item.id !== project.id));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      console.error('Failed to delete project:', error);
+      alert(`Failed to delete project: ${message}`);
+    } finally {
+      setDeletingProjectId(null);
+    }
+  };
+
   if (!authReady) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#f5f5f5]">
@@ -281,6 +302,8 @@ export default function App() {
           onNavigateLibrary={handleNavigateToLibrary}
           onOpenUpload={handleOpenUpload}
           projects={projects}
+          deletingProjectId={deletingProjectId}
+          onDeleteProject={handleDeleteProject}
           authButtonLabel={authButtonLabel}
           onAuthButtonClick={handleSignOut}
         />
@@ -300,6 +323,12 @@ export default function App() {
       {projectsLoading && currentPage === 'library' ? (
         <div className="fixed bottom-6 right-6 z-[80] rounded-full bg-[#000001] px-5 py-3 font-['Satoshi_Variable:Medium',sans-serif] text-sm text-white shadow-lg">
           Loading saved projects...
+        </div>
+      ) : null}
+
+      {deletingProjectId && currentPage === 'library' ? (
+        <div className="fixed bottom-6 right-6 z-[80] rounded-full bg-[#000001] px-5 py-3 font-['Satoshi_Variable:Medium',sans-serif] text-sm text-white shadow-lg">
+          Deleting project...
         </div>
       ) : null}
 

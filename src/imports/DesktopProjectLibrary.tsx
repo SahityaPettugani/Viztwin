@@ -64,6 +64,23 @@ function Heart() {
   );
 }
 
+function DeleteButton({ onClick, disabled = false }: { onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      aria-label="Delete project"
+      disabled={disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className="absolute right-[1.46vw] top-[1.46vw] z-10 flex h-[2.19vw] w-[2.19vw] items-center justify-center rounded-full bg-[#fff5f5] text-[#b42318] shadow-sm transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <span className="font-['Satoshi_Variable:Black',sans-serif] text-[1.04vw] leading-none">x</span>
+    </button>
+  );
+}
+
 function NewProjButton({ onClick }: { onClick: () => void }) {
   return (
     <div onClick={onClick} className="absolute bg-[#91f9d0] flex gap-[0.52vw] h-[2.86vw] items-center justify-center left-[4.27%] px-[1.98vw] py-[0.57vw] rounded-[1.43vw] top-[29.22vw] w-[17.19vw] cursor-pointer hover:bg-[#7ee6bc] transition-colors" data-name="New proj button">
@@ -79,7 +96,9 @@ function ProjectCard({
   date, 
   left, 
   top,
-  onClick 
+  onClick,
+  onDelete,
+  deleteDisabled = false,
 }: { 
   image: string; 
   title: string; 
@@ -87,6 +106,8 @@ function ProjectCard({
   left: string; 
   top: string;
   onClick: () => void;
+  onDelete?: () => void;
+  deleteDisabled?: boolean;
 }) {
   return (
     <div 
@@ -96,6 +117,7 @@ function ProjectCard({
       onClick={onClick}
     >
       <div className="absolute bg-[#e8e9eb] inset-0 rounded-[1.56vw]" />
+      {onDelete ? <DeleteButton onClick={onDelete} disabled={deleteDisabled} /> : null}
       <Heart />
       <div className="absolute h-[20.83vw] left-[1.46vw] rounded-[0.94vw] top-[1.46vw] w-[26.09vw]">
         <div className="absolute inset-0 overflow-hidden pointer-events-none rounded-[0.94vw]">
@@ -142,6 +164,8 @@ export default function DesktopProjectLibrary({
   onNavigateLibrary,
   onOpenUpload,
   projects = [],
+  deletingProjectId,
+  onDeleteProject,
   authButtonLabel,
   onAuthButtonClick,
 }: {
@@ -150,6 +174,8 @@ export default function DesktopProjectLibrary({
   onNavigateLibrary: () => void;
   onOpenUpload: () => void;
   projects?: Project[];
+  deletingProjectId?: string | null;
+  onDeleteProject?: (project: Project) => void;
   authButtonLabel?: string;
   onAuthButtonClick?: () => void;
 }) {
@@ -220,6 +246,16 @@ export default function DesktopProjectLibrary({
     setSelectedPointCloud(urls);
   };
 
+  const handleDeleteClick = (project: Project) => {
+    if (selectedTitle === project.title) {
+      setSelectedProject(null);
+      setSelectedTitle('');
+      setSelectedPointCloud(undefined);
+    }
+
+    onDeleteProject?.(project);
+  };
+
   return (
     <div className="bg-white relative w-full min-h-screen overflow-x-hidden" data-name="Desktop - Project Library">
       {/* Header spacing */}
@@ -259,6 +295,8 @@ export default function DesktopProjectLibrary({
               bimIfc: project.bimIfcUrl,
               bimProps: project.bimPropsUrl,
             })}
+            onDelete={onDeleteProject ? () => handleDeleteClick(project) : undefined}
+            deleteDisabled={deletingProjectId === project.id}
           />
         );
       })}

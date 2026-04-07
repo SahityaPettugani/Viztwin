@@ -22,6 +22,9 @@ DEFAULTS = {
     "material_for_objects": "Concrete",
 }
 
+def clamp_dimension(value, minimum, maximum):
+    return max(min(float(value), float(maximum)), float(minimum))
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -166,7 +169,7 @@ def create_walls_and_openings(ifc_model, storeys_ifc, payload):
         material_layer_set = ifc_model.create_material_layer_set([material_layer])
         material_layer_set_usage = ifc_model.create_material_layer_set_usage(material_layer_set, wall_thickness)
         wall_placement = ifc_model.wall_placement(wall_z_placement)
-        wall_axis_placement = ifc_model.wall_axis_placement(start_point, end_point)
+        wall_axis_placement = ifc_model.wall_axis_placement(start_point, end_point, wall_thickness)
         wall_axis_representation = ifc_model.wall_axis_representation(wall_axis_placement)
         wall_swept_solid_representation = ifc_model.wall_swept_solid_representation(
             start_point, end_point, wall_height, wall_thickness
@@ -265,7 +268,7 @@ def main():
             geometry = element['geometry']
             start_point = (float(geometry['start_x']), float(geometry['start_y']))
             end_point = (float(geometry['end_x']), float(geometry['end_y']))
-            wall_thickness = float(element.get('thickness', 0.2))
+            wall_thickness = clamp_dimension(element.get('thickness', 0.2), 0.02, 0.08)
             wall_material = element.get('material', material_for_objects)
             wall_z_placement = float(geometry.get('start_z', 0.0))
             wall_height = float(element.get('height', 3.0))
@@ -274,7 +277,7 @@ def main():
             material_layer_set = ifc_model.create_material_layer_set([material_layer])
             material_layer_set_usage = ifc_model.create_material_layer_set_usage(material_layer_set, wall_thickness)
             wall_placement = ifc_model.wall_placement(wall_z_placement)
-            wall_axis_placement = ifc_model.wall_axis_placement(start_point, end_point)
+            wall_axis_placement = ifc_model.wall_axis_placement(start_point, end_point, wall_thickness)
             wall_axis_representation = ifc_model.wall_axis_representation(wall_axis_placement)
             wall_swept_solid_representation = ifc_model.wall_swept_solid_representation(
                 start_point, end_point, wall_height, wall_thickness
@@ -343,9 +346,14 @@ def main():
                     storey_number = int(element.get('storey_number', 1))
                     ifc_model.assign_product_to_storey(ifc_ceiling, storeys_ifc[storey_number - 1])
         elif el_type == 'door':
-            geometry = element.get('geometry', {})
+            geometry = dict(element.get('geometry', {}))
+            geometry.setdefault('thickness', clamp_dimension(element.get('thickness', 0.04), 0.01, 0.05))
+            geometry.setdefault('height', float(element.get('height', 2.1)))
             if hasattr(ifc_model, 'create_door'):
-                ifc_model.create_door(element['id'], geometry)
+                ifc_door = ifc_model.create_door(element['id'], geometry)
+                if storeys_ifc:
+                    storey_number = int(element.get('storey_number', 1))
+                    ifc_model.assign_product_to_storey(ifc_door, storeys_ifc[storey_number - 1])
         # Add more element types here as needed
         # Inside the "Unified element processing loop" in main()
         elif el_type == 'beam':
@@ -356,25 +364,57 @@ def main():
             ]
             z_pos = float(geometry.get('start_z', 0.0))
             height = float(element.get('height', 0.2))
+            thickness = clamp_dimension(element.get('thickness', 0.2), 0.01, 0.06)
             if hasattr(ifc_model, 'create_beam'):
-                ifc_beam = ifc_model.create_beam(element['id'], points, z_pos, height)
+                storey_number = int(element.get('storey_number', 1))
+                ifc_beam = ifc_model.create_beam(element['id'], points, z_pos, height, thickness=thickness)
                 ifc_model.assign_product_to_storey(ifc_beam, storeys_ifc[storey_number - 1])
 
         elif el_type == 'column':
             geometry = element.get('geometry', {})
-            center_pt = [float(geometry['start_x']), float(geometry['start_y'])]
+            start_x = float(geometry['start_x'])
+            start_y = float(geometry['start_y'])
+            end_x = float(geometry.get('end_x', start_x))
+            end_y = float(geometry.get('end_y', start_y))
+            center_pt = [
+                (start_x + end_x) / 2.0,
+                (start_y + end_y) / 2.0,
+            ]
             z_pos = float(geometry.get('start_z', 0.0))
             height = float(element.get('height', 3.0))
+            thickness = float(element.get('thickness', 0.0))
+            footprint_dx = abs(end_x - start_x)
+            footprint_dy = abs(end_y - start_y)
+            derived_diameter = max(thickness, footprint_dx, footprint_dy)
+            radius = max(derived_diameter / 2.0, 0.005)
             if hasattr(ifc_model, 'create_column'):
-                ifc_col = ifc_model.create_column(element['id'], center_pt, z_pos, height)
+                storey_number = int(element.get('storey_number', 1))
+                thickness = clamp_dimension(max(thickness, 0.03), 0.03, 0.09)
+                size_x = clamp_dimension(min(max(footprint_dx, thickness), thickness * 1.5), 0.03, 0.12)
+                size_y = clamp_dimension(min(max(footprint_dy, thickness), thickness * 1.5), 0.03, 0.12)
+                radius = clamp_dimension(min(radius, max(size_x, size_y) / 2.0), 0.015, 0.06)
+                ifc_col = ifc_model.create_column(
+                    element['id'],
+                    center_pt,
+                    z_pos,
+                    height,
+                    radius=radius,
+                    size_x=size_x,
+                    size_y=size_y,
+                )
                 ifc_model.assign_product_to_storey(ifc_col, storeys_ifc[storey_number - 1])
 
         elif el_type == 'window':
         # Windows are typically openings in walls; ensure your IFCmodel 
         # has a method to create them as independent products or voids
-            geometry = element.get('geometry', {})
+            geometry = dict(element.get('geometry', {}))
+            geometry.setdefault('thickness', clamp_dimension(element.get('thickness', 0.03), 0.01, 0.04))
+            geometry.setdefault('height', float(element.get('height', 1.2)))
             if hasattr(ifc_model, 'create_window'):
-                ifc_model.create_window(element['id'], geometry)
+                ifc_window = ifc_model.create_window(element['id'], geometry)
+                if storeys_ifc:
+                    storey_number = int(element.get('storey_number', 1))
+                    ifc_model.assign_product_to_storey(ifc_window, storeys_ifc[storey_number - 1])
 
     ifc_model.write()
     print(f"IFC model saved to {output_ifc}")

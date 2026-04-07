@@ -16,6 +16,7 @@ export interface Project {
   bimModelUrl?: string;
   bimIfcUrl?: string;
   bimPropsUrl?: string;
+  storageBasePath?: string;
 }
 
 export interface GeneratedFile {
@@ -103,6 +104,7 @@ const mapProjectRow = (row: ProjectRow): Project => ({
   bimModelUrl: getPublicAssetUrl(row.bim_obj_file_path),
   bimIfcUrl: getPublicAssetUrl(row.bim_ifc_file_path),
   bimPropsUrl: getPublicAssetUrl(row.bim_props_file_path),
+  storageBasePath: `${row.user_id}/${row.id}`,
 });
 
 const fetchBlob = async (assetUrl: string) => {
@@ -213,4 +215,76 @@ export const createProject = async ({
   }
 
   return mapProjectRow(data as ProjectRow);
+};
+
+export const deleteProject = async (project: Project) => {
+  const storageBasePath = project.storageBasePath;
+
+  if (storageBasePath) {
+    const { data: objects, error: listError } = await supabase.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .list(storageBasePath, {
+        limit: 1000,
+        sortBy: { column: 'name', order: 'asc' },
+      });
+
+    if (listError) {
+      throw listError;
+    }
+
+    const pathsToDelete = (objects || []).flatMap((entry) => {
+      const nestedPath = `${storageBasePath}/${entry.name}`;
+      if (!entry.id) {
+        return [];
+      }
+      return [nestedPath];
+    });
+
+    const queue = [...pathsToDelete];
+    while (queue.length > 0) {
+      const currentPrefix = queue.shift()!;
+      const { data: nestedEntries, error: nestedListError } = await supabase.storage
+        .from(SUPABASE_STORAGE_BUCKET)
+        .list(currentPrefix, {
+          limit: 1000,
+          sortBy: { column: 'name', order: 'asc' },
+        });
+
+      if (nestedListError) {
+        throw nestedListError;
+      }
+
+      if (!nestedEntries?.length) {
+        continue;
+      }
+
+      for (const nestedEntry of nestedEntries) {
+        const nestedPath = `${currentPrefix}/${nestedEntry.name}`;
+        if (nestedEntry.id) {
+          pathsToDelete.push(nestedPath);
+        } else {
+          queue.push(nestedPath);
+        }
+      }
+    }
+
+    if (pathsToDelete.length > 0) {
+      const { error: removeStorageError } = await supabase.storage
+        .from(SUPABASE_STORAGE_BUCKET)
+        .remove(pathsToDelete);
+
+      if (removeStorageError) {
+        throw removeStorageError;
+      }
+    }
+  }
+
+  const { error } = await supabase
+    .from('projects')
+    .delete()
+    .eq('id', project.id);
+
+  if (error) {
+    throw error;
+  }
 };

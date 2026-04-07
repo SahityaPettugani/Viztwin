@@ -146,8 +146,8 @@ def auto_tune_parameters(pcd):
     spacing = estimate_point_spacing(pcd)
 
     smoothing_k = 5 if n_points > 900000 else 7
-    wall_ransac_thresh = min(max(spacing * 2.0, 0.03), 0.15)
-    floor_ceiling_ransac_thresh = min(max(spacing * 1.5, 0.02), 0.12)
+    wall_ransac_thresh = min(max(spacing * 3.0, 0.04), 0.18)
+    floor_ceiling_ransac_thresh = min(max(spacing * 2.0, 0.03), 0.14)
 
     dbscan_params = {
         'beam': {
@@ -389,23 +389,24 @@ def instantiate_with_dbscan(pcd, class_name, eps=0.1, min_points=100):
 
 def is_valid_geometry(pcd, class_name):
     """Helper to verify if a cluster actually looks like a column/beam."""
-    bbox = pcd.get_axis_aligned_bounding_box()
-    extent = np.asarray(bbox.get_extent(), dtype=np.float32)
-    
-    if class_name == 'column':
-        width_x, width_y, height = extent
-        footprint_max = max(width_x, width_y)
-        footprint_min = min(width_x, width_y)
-        footprint_area = width_x * width_y
-        return (
-            height > 1.5 and
-            height > footprint_max * 1.8 and
-            footprint_min > 0.05 and
-            footprint_max < 1.2 and
-            footprint_area < 1.0
-        )
-    if class_name == 'beam':
-        return max(extent[0], extent[1]) > extent[2]
+    # Validation disabled for debugging: keep all clustered geometry.
+    # bbox = pcd.get_axis_aligned_bounding_box()
+    # extent = np.asarray(bbox.get_extent(), dtype=np.float32)
+    #
+    # if class_name == 'column':
+    #     width_x, width_y, height = extent
+    #     footprint_max = max(width_x, width_y)
+    #     footprint_min = min(width_x, width_y)
+    #     footprint_area = width_x * width_y
+    #     return (
+    #         height > 0.20 and
+    #         height > footprint_max * 1.2 and
+    #         footprint_min > 0.015 and
+    #         footprint_max < 0.8 and
+    #         footprint_area < 0.25
+    #     )
+    # if class_name == 'beam':
+    #     return max(extent[0], extent[1]) > extent[2]
     return True
 
 def filter_small_instances(instances_dict, min_points_thresholds):
@@ -624,7 +625,7 @@ def instantiate_oriented_planes(
     min_points=300,
     max_instances=12,
     orientation='vertical',
-    normal_z_max_for_vertical=0.25,
+    normal_z_max_for_vertical=0.35,
     normal_z_min_for_horizontal=0.9,
 ):
     if len(pcd.points) < min_points:
@@ -716,34 +717,34 @@ def oriented_line_from_wall_points(pts_xy):
         'offset_median': float(np.median(rel @ normal)),
     }
 
-def is_valid_planar_instance(pcd, class_name):
-    valid, _ = explain_planar_instance(pcd, class_name)
-    return valid
+# def is_valid_planar_instance(pcd, class_name):
+#     valid, _ = explain_planar_instance(pcd, class_name)
+#     return valid
 
 def explain_planar_instance(pcd, class_name):
-    pts = np.asarray(pcd.points)
-    if len(pts) < 100:
-        return False, "too_few_points"
-
-    bbox = pcd.get_axis_aligned_bounding_box()
-    extent = np.asarray(bbox.get_extent())
-
-    if class_name == 'wall':
-        xy = pts[:, :2]
-        line = oriented_line_from_wall_points(xy)
-        z_min = np.percentile(pts[:, 2], 5)
-        z_max = np.percentile(pts[:, 2], 95)
-        height = float(z_max - z_min)
-        horizontal = float(line['length'])
-        thickness = float(line['thickness'])
-        if height < 1.5 or horizontal < 0.5:
-            return False, f"height={height:.2f}, length={horizontal:.2f}"
-        if thickness > 1.0:
-            return False, f"thickness={thickness:.2f}"
-    elif class_name in ['floor', 'ceiling']:
-        if extent[2] > max(extent[0], extent[1]):
-            return False, f"extent_z={extent[2]:.2f}"
-
+    # Validation disabled for debugging: accept all planar instances.
+    # pts = np.asarray(pcd.points)
+    # if len(pts) < 100:
+    #     return False, "too_few_points"
+    #
+    # bbox = pcd.get_axis_aligned_bounding_box()
+    # extent = np.asarray(bbox.get_extent())
+    #
+    # if class_name == 'wall':
+    #     xy = pts[:, :2]
+    #     line = oriented_line_from_wall_points(xy)
+    #     z_min = np.percentile(pts[:, 2], 5)
+    #     z_max = np.percentile(pts[:, 2], 95)
+    #     height = float(z_max - z_min)
+    #     horizontal = float(line['length'])
+    #     thickness = float(line['thickness'])
+    #     if height < 0.18 or horizontal < 0.12:
+    #         return False, f"height={height:.2f}, length={horizontal:.2f}"
+    #     if thickness > 1.2:
+    #         return False, f"thickness={thickness:.2f}"
+    # elif class_name in ['floor', 'ceiling']:
+    #     if extent[2] > max(extent[0], extent[1]) * 1.5:
+    #         return False, f"extent_z={extent[2]:.2f}"
     return True, "ok"
 
 def merge_collinear_walls(wall_instances, dist_tolerance=0.2, angle_tolerance_deg=8.0, gap_tolerance=0.6):
@@ -888,7 +889,7 @@ def fit_plane_model_from_instance(pcd):
     except Exception:
         return None
 
-def remove_points_near_floor_ceiling(structural_pcd, floor_instances, ceiling_instances, margin=0.03):
+def remove_points_near_floor_ceiling(structural_pcd, floor_instances, ceiling_instances, margin=0.02):
     if len(structural_pcd.points) == 0:
         return structural_pcd
 
@@ -916,7 +917,7 @@ def remove_points_near_floor_ceiling(structural_pcd, floor_instances, ceiling_in
         print(f"  Removed {removed} structural points within {margin:.3f} m of floor/ceiling before wall recovery")
     return filtered
 
-def retain_vertical_surface_points(pcd, radius=0.12, max_nn=30, vertical_normal_z_max=0.35):
+def retain_vertical_surface_points(pcd, radius=0.12, max_nn=30, vertical_normal_z_max=0.45):
     if len(pcd.points) < 50:
         return pcd
 
@@ -956,7 +957,7 @@ def remove_non_structural_labels_from_geometry(pcd, separated_classes):
     nbrs = NearestNeighbors(n_neighbors=1, algorithm='kd_tree', n_jobs=-1).fit(subtract_points)
     chunk_size = 50000
     keep_mask = np.ones(len(base_points), dtype=bool)
-    removal_radius = 0.08
+    removal_radius = 0.04
 
     for start in range(0, len(base_points), chunk_size):
         end = min(start + chunk_size, len(base_points))
@@ -969,146 +970,61 @@ def remove_non_structural_labels_from_geometry(pcd, separated_classes):
         print(f"  Removed {removed} raw points near door/window labels before wall recovery")
     return filtered
 
-def build_scene_context(instances_dict):
-    floor_z = None
-    ceiling_z = None
-    room_height = None
-
-    if instances_dict.get('floor'):
-        floor_pts = np.asarray(instances_dict['floor'][0].points, dtype=np.float32)
-        if len(floor_pts) > 0:
-            floor_z = float(np.percentile(floor_pts[:, 2], 50))
-
-    if instances_dict.get('ceiling'):
-        ceiling_pts = np.asarray(instances_dict['ceiling'][0].points, dtype=np.float32)
-        if len(ceiling_pts) > 0:
-            ceiling_z = float(np.percentile(ceiling_pts[:, 2], 50))
-
-    if floor_z is not None and ceiling_z is not None:
-        room_height = max(ceiling_z - floor_z, 1e-6)
-
-    wall_lines = []
-    for wall in instances_dict.get('wall', []):
-        pts = np.asarray(wall.points, dtype=np.float32)
-        if len(pts) < 50:
-            continue
-        wall_lines.append(oriented_line_from_wall_points(pts[:, :2]))
-
-    return {
-        'floor_z': floor_z,
-        'ceiling_z': ceiling_z,
-        'room_height': room_height,
-        'wall_lines': wall_lines,
-    }
-
-def infer_scene_mode(context, scale_factor=1.0):
-    room_height = context.get('room_height')
-    wall_count = len(context.get('wall_lines', []))
-    if scale_factor > 2.5:
-        return 'synthetic_like'
-    if room_height is not None and room_height < 1.8:
-        return 'synthetic_like'
-    if wall_count >= 6:
-        return 'real_like'
-    return 'real_like'
-
-def distance_to_wall_lines_xy(point_xy, wall_lines):
-    if not wall_lines:
-        return None
-    dists = [abs(np.dot(point_xy - line['center'], line['normal'])) for line in wall_lines]
-    return float(min(dists)) if dists else None
-
-def explain_contextual_instance(pcd, class_name, context):
-    pts = np.asarray(pcd.points, dtype=np.float32)
-    if len(pts) < 20:
-        return False, "too_few_points"
-
-    floor_z = context.get('floor_z')
-    ceiling_z = context.get('ceiling_z')
-    room_height = context.get('room_height')
-    wall_lines = context.get('wall_lines', [])
-    scene_mode = context.get('scene_mode', 'real_like')
-
-    bbox = pcd.get_axis_aligned_bounding_box()
-    extent = np.asarray(bbox.get_extent(), dtype=np.float32)
-    width_x, width_y, height_aabb = extent
-    bottom = float(np.percentile(pts[:, 2], 5))
-    top = float(np.percentile(pts[:, 2], 95))
-    height = max(top - bottom, 1e-6)
-    center_xy = np.median(pts[:, :2], axis=0)
-    wall_dist = distance_to_wall_lines_xy(center_xy, wall_lines)
-
-    if room_height is None:
-        room_height = max(height, 1.0)
-
-    footprint_max = float(max(width_x, width_y))
-    footprint_min = float(min(width_x, width_y))
-    footprint_area = float(width_x * width_y)
-
-    if class_name == 'column':
-        min_height_ratio = 0.22 if scene_mode == 'synthetic_like' else 0.28
-        max_footprint_ratio = 0.75 if scene_mode == 'synthetic_like' else 0.65
-        max_area_ratio = 0.42 if scene_mode == 'synthetic_like' else 0.36
-        max_bottom_offset_ratio = 0.50 if scene_mode == 'synthetic_like' else 0.42
-        if height < room_height * min_height_ratio:
-            return False, f"height={height:.2f}"
-        if footprint_max > room_height * max_footprint_ratio:
-            return False, f"footprint_max={footprint_max:.2f}"
-        if footprint_area > (room_height * max_area_ratio) ** 2:
-            return False, f"footprint_area={footprint_area:.2f}"
-        if floor_z is not None and abs(bottom - floor_z) > room_height * max_bottom_offset_ratio:
-            return False, f"bottom_offset={abs(bottom - floor_z):.2f}"
-        return True, "ok"
-
-    if class_name == 'beam':
-        longest = float(max(extent))
-        smallest = float(min(extent))
-        mid = float(np.sort(extent)[1])
-        if longest < room_height * 0.25:
-            return False, f"length={longest:.2f}"
-        if smallest > room_height * 0.20:
-            return False, f"thickness={smallest:.2f}"
-        if ceiling_z is not None and top < ceiling_z - room_height * 0.35:
-            return False, f"top={top:.2f}"
-        if height_aabb > max(longest, mid):
-            return False, f"height_axis={height_aabb:.2f}"
-        return True, "ok"
-
-    if class_name == 'door':
-        if floor_z is not None and abs(bottom - floor_z) > room_height * 0.30:
-            return False, f"bottom_offset={abs(bottom - floor_z):.2f}"
-        if height < room_height * 0.18 or height > room_height * 1.10:
-            return False, f"height={height:.2f}"
-        if wall_dist is not None and wall_dist > room_height * 0.28:
-            return False, f"wall_dist={wall_dist:.2f}"
-        return True, "ok"
-
-    if class_name == 'window':
-        if floor_z is not None and bottom < floor_z + room_height * 0.05:
-            return False, f"sill={bottom - floor_z:.2f}"
-        if ceiling_z is not None and top > ceiling_z - room_height * 0.05:
-            return False, f"head_clearance={ceiling_z - top:.2f}"
-        if height < room_height * 0.08 or height > room_height * 0.80:
-            return False, f"height={height:.2f}"
-        if wall_dist is not None and wall_dist > room_height * 0.28:
-            return False, f"wall_dist={wall_dist:.2f}"
-        return True, "ok"
-
-    return True, "ok"
+# def build_scene_context(instances_dict):
+#     floor_z = None
+#     ceiling_z = None
+#     room_height = None
+#
+#     if instances_dict.get('floor'):
+#         floor_pts = np.asarray(instances_dict['floor'][0].points, dtype=np.float32)
+#         if len(floor_pts) > 0:
+#             floor_z = float(np.percentile(floor_pts[:, 2], 50))
+#
+#     if instances_dict.get('ceiling'):
+#         ceiling_pts = np.asarray(instances_dict['ceiling'][0].points, dtype=np.float32)
+#         if len(ceiling_pts) > 0:
+#             ceiling_z = float(np.percentile(ceiling_pts[:, 2], 50))
+#
+#     if floor_z is not None and ceiling_z is not None:
+#         room_height = max(ceiling_z - floor_z, 1e-6)
+#
+#     wall_lines = []
+#     for wall in instances_dict.get('wall', []):
+#         pts = np.asarray(wall.points, dtype=np.float32)
+#         if len(pts) < 50:
+#             continue
+#         wall_lines.append(oriented_line_from_wall_points(pts[:, :2]))
+#
+#     return {
+#         'floor_z': floor_z,
+#         'ceiling_z': ceiling_z,
+#         'room_height': room_height,
+#         'wall_lines': wall_lines,
+#     }
+#
+# def infer_scene_mode(context, scale_factor=1.0):
+#     room_height = context.get('room_height')
+#     wall_count = len(context.get('wall_lines', []))
+#     if scale_factor > 2.5:
+#         return 'synthetic_like'
+#     if room_height is not None and room_height < 1.8:
+#         return 'synthetic_like'
+#     if wall_count >= 6:
+#         return 'real_like'
+#     return 'real_like'
+#
+# def distance_to_wall_lines_xy(point_xy, wall_lines):
+#     if not wall_lines:
+#         return None
+#     dists = [abs(np.dot(point_xy - line['center'], line['normal'])) for line in wall_lines]
+#     return float(min(dists)) if dists else None
+#
+# def explain_contextual_instance(pcd, class_name, context):
+#     return True, "ok"
 
 def refine_instances_with_context(instances, class_name, instances_dict, scale_factor=1.0):
-    if not instances or class_name not in {'beam', 'column', 'door', 'window'}:
-        return instances
-
-    context = build_scene_context(instances_dict)
-    context['scale_factor'] = scale_factor
-    context['scene_mode'] = infer_scene_mode(context, scale_factor=scale_factor)
-    kept = []
-    for instance in instances:
-        valid, reason = explain_contextual_instance(instance, class_name, context)
-        if valid:
-            kept.append(instance)
-    return kept
+    # Contextual refinement is currently disabled, so return instances unchanged.
+    return instances
 
 def instantiate_dominant_plane(pcd, class_name, dist_thresh=0.12):
     """Extract the dominant horizontal floor/ceiling plane only."""
@@ -1116,12 +1032,272 @@ def instantiate_dominant_plane(pcd, class_name, dist_thresh=0.12):
         pcd,
         class_name,
         dist_thresh=dist_thresh,
-        min_points=100,
+        min_points=50,
         max_instances=1,
         orientation='horizontal',
         normal_z_min_for_horizontal=0.9,
     )
     return instances[:1]
+
+def compute_room_footprint(instances_dict):
+    xy_groups = []
+    for class_name in ['floor', 'ceiling', 'wall']:
+        for pcd in instances_dict.get(class_name, []):
+            pts = np.asarray(pcd.points, dtype=np.float32)
+            if len(pts) == 0:
+                continue
+            xy_groups.append(pts[:, :2])
+
+    if not xy_groups:
+        return None
+
+    xy = np.vstack(xy_groups)
+    q_min = np.percentile(xy, 5, axis=0)
+    q_max = np.percentile(xy, 95, axis=0)
+    return {
+      'min_x': float(q_min[0]),
+      'min_y': float(q_min[1]),
+      'max_x': float(q_max[0]),
+      'max_y': float(q_max[1]),
+    }
+
+def line_length_xy(start, end):
+    start = np.asarray(start, dtype=np.float32)
+    end = np.asarray(end, dtype=np.float32)
+    return float(np.linalg.norm(end - start))
+
+def segment_intersection_2d(a0, a1, b0, b1):
+    a0 = np.asarray(a0, dtype=np.float32)
+    a1 = np.asarray(a1, dtype=np.float32)
+    b0 = np.asarray(b0, dtype=np.float32)
+    b1 = np.asarray(b1, dtype=np.float32)
+
+    r = a1 - a0
+    s = b1 - b0
+    rxs = r[0] * s[1] - r[1] * s[0]
+    q_p = b0 - a0
+    qpxr = q_p[0] * r[1] - q_p[1] * r[0]
+    if abs(rxs) < 1e-8 and abs(qpxr) < 1e-8:
+        return False
+    if abs(rxs) < 1e-8:
+        return False
+    t = (q_p[0] * s[1] - q_p[1] * s[0]) / rxs
+    u = (q_p[0] * r[1] - q_p[1] * r[0]) / rxs
+    return 0.0 < t < 1.0 and 0.0 < u < 1.0
+
+def select_perimeter_wall_refs(instances_dict, footprint):
+    refs = build_wall_reference_lines(instances_dict, footprint)
+    if footprint is None or len(refs) <= 4:
+        return refs
+
+    width = max(footprint['max_x'] - footprint['min_x'], 1e-6)
+    depth = max(footprint['max_y'] - footprint['min_y'], 1e-6)
+
+    def score_ref(ref, side):
+        center = ref['center']
+        length = line_length_xy(ref['start'], ref['end'])
+        dir_x = abs(ref['direction'][0])
+        dir_y = abs(ref['direction'][1])
+
+        if side == 'left':
+            if dir_y < dir_x:
+                return None
+            dist = abs(center[0] - footprint['min_x'])
+            span_bonus = length / depth
+        elif side == 'right':
+            if dir_y < dir_x:
+                return None
+            dist = abs(center[0] - footprint['max_x'])
+            span_bonus = length / depth
+        elif side == 'bottom':
+            if dir_x < dir_y:
+                return None
+            dist = abs(center[1] - footprint['min_y'])
+            span_bonus = length / width
+        else:
+            if dir_x < dir_y:
+                return None
+            dist = abs(center[1] - footprint['max_y'])
+            span_bonus = length / width
+
+        return float(dist - 0.15 * span_bonus)
+
+    selected = []
+    used_ids = set()
+    for side in ['left', 'right', 'bottom', 'top']:
+        candidates = []
+        for idx, ref in enumerate(refs):
+            score = score_ref(ref, side)
+            if score is None:
+                continue
+            candidates.append((score, -line_length_xy(ref['start'], ref['end']), idx, ref))
+        if not candidates:
+            continue
+        candidates.sort()
+        _, _, idx, ref = candidates[0]
+        if idx not in used_ids:
+            selected.append(ref)
+            used_ids.add(idx)
+
+    filtered = []
+    for ref in selected:
+        intersects = False
+        for kept in filtered:
+            if segment_intersection_2d(ref['start'], ref['end'], kept['start'], kept['end']):
+                if line_length_xy(ref['start'], ref['end']) <= line_length_xy(kept['start'], kept['end']):
+                    intersects = True
+                    break
+        if not intersects:
+            filtered.append(ref)
+
+    return filtered if filtered else refs
+
+def filter_instances_to_wall_refs(instances_dict, wall_refs):
+    if not wall_refs:
+        return instances_dict
+
+    wall_instances = instances_dict.get('wall', [])
+    if not wall_instances:
+        return instances_dict
+
+    kept_walls = []
+    used_ref_ids = set()
+    for wall in wall_instances:
+        pts = np.asarray(wall.points, dtype=np.float32)
+        if len(pts) < 50:
+            continue
+        line = oriented_line_from_wall_points(pts[:, :2])
+        start, end = np.asarray(line['start'], dtype=np.float32), np.asarray(line['end'], dtype=np.float32)
+        length = line_length_xy(start, end)
+        if length < 1e-4:
+            continue
+
+        best_idx = None
+        best_score = float('inf')
+        center = 0.5 * (start + end)
+        direction = np.asarray(line['direction'], dtype=np.float32)
+        direction = direction / (np.linalg.norm(direction) + 1e-8)
+        for idx, ref in enumerate(wall_refs):
+            ref_dir = ref['direction'] / (np.linalg.norm(ref['direction']) + 1e-8)
+            alignment = abs(float(np.dot(direction, ref_dir)))
+            if alignment < 0.8:
+                continue
+            dist = abs(float(np.dot(center - ref['center'], ref['normal'])))
+            score = dist + 0.1 * abs(length - line_length_xy(ref['start'], ref['end']))
+            if score < best_score:
+                best_score = score
+                best_idx = idx
+
+        if best_idx is not None and best_idx not in used_ref_ids:
+            kept_walls.append(wall)
+            used_ref_ids.add(best_idx)
+
+    if not kept_walls:
+        return instances_dict
+
+    filtered = dict(instances_dict)
+    filtered['wall'] = kept_walls
+    return filtered
+
+def clamp_wall_line_to_room(line, footprint):
+    start = np.asarray(line['start'], dtype=np.float32).copy()
+    end = np.asarray(line['end'], dtype=np.float32).copy()
+
+    if footprint is None:
+        return start, end
+
+    min_x = footprint['min_x']
+    min_y = footprint['min_y']
+    max_x = footprint['max_x']
+    max_y = footprint['max_y']
+
+    start[0] = np.clip(start[0], min_x, max_x)
+    start[1] = np.clip(start[1], min_y, max_y)
+    end[0] = np.clip(end[0], min_x, max_x)
+    end[1] = np.clip(end[1], min_y, max_y)
+    return start, end
+
+def compute_room_levels(instances_dict):
+    floor_z = None
+    ceiling_z = None
+
+    if 'floor' in instances_dict and len(instances_dict['floor']) > 0:
+        floor_pts = np.asarray(instances_dict['floor'][0].points, dtype=np.float32)
+        if len(floor_pts) > 0:
+            floor_z = float(np.percentile(floor_pts[:, 2], 50))
+
+    if 'ceiling' in instances_dict and len(instances_dict['ceiling']) > 0:
+        ceil_pts = np.asarray(instances_dict['ceiling'][0].points, dtype=np.float32)
+        if len(ceil_pts) > 0:
+            ceiling_z = float(np.percentile(ceil_pts[:, 2], 50))
+
+    wall_bottoms = []
+    wall_tops = []
+    for wall in instances_dict.get('wall', []):
+        pts = np.asarray(wall.points, dtype=np.float32)
+        if len(pts) < 50:
+            continue
+        wall_bottoms.append(float(np.percentile(pts[:, 2], 5)))
+        wall_tops.append(float(np.percentile(pts[:, 2], 95)))
+
+    if floor_z is None and wall_bottoms:
+        floor_z = float(np.median(wall_bottoms))
+    if ceiling_z is None and wall_tops:
+        ceiling_z = float(np.median(wall_tops))
+
+    if floor_z is not None and wall_bottoms:
+        floor_z = float(np.median([floor_z, float(np.median(wall_bottoms))]))
+    if ceiling_z is not None and wall_tops:
+        ceiling_z = float(np.median([ceiling_z, float(np.median(wall_tops))]))
+
+    if floor_z is None:
+        floor_z = 0.0
+    if ceiling_z is None:
+        ceiling_z = floor_z + 2.5
+    if ceiling_z <= floor_z:
+        ceiling_z = floor_z + 2.5
+
+    return floor_z, ceiling_z
+
+def build_wall_reference_lines(instances_dict, footprint):
+    refs = []
+    for wall in instances_dict.get('wall', []):
+        pts = np.asarray(wall.points, dtype=np.float32)
+        if len(pts) < 50:
+            continue
+        line = oriented_line_from_wall_points(pts[:, :2])
+        start, end = clamp_wall_line_to_room(line, footprint)
+        direction = np.asarray(line['direction'], dtype=np.float32)
+        direction = direction / (np.linalg.norm(direction) + 1e-8)
+        normal = np.array([-direction[1], direction[0]], dtype=np.float32)
+        center = 0.5 * (start + end)
+        refs.append({
+            'start': start,
+            'end': end,
+            'center': center,
+            'direction': direction,
+            'normal': normal,
+            'thickness': float(min(max(line['thickness'], 0.08), 0.35)),
+        })
+    return refs
+
+def snap_linear_instance_to_wall(start_xy, end_xy, wall_refs):
+    if not wall_refs:
+        return start_xy, end_xy
+
+    center_xy = 0.5 * (start_xy + end_xy)
+    width = float(np.linalg.norm(end_xy - start_xy))
+    if width < 1e-6:
+        width = 0.1
+
+    def wall_dist(wall_ref):
+        return abs(np.dot(center_xy - wall_ref['center'], wall_ref['normal']))
+
+    wall_ref = min(wall_refs, key=wall_dist)
+    projected_center = center_xy - wall_ref['normal'] * np.dot(center_xy - wall_ref['center'], wall_ref['normal'])
+    snapped_start = projected_center - wall_ref['direction'] * (width * 0.5)
+    snapped_end = projected_center + wall_ref['direction'] * (width * 0.5)
+    return snapped_start, snapped_end
 
 def extract_bim_parameters(instances_dict):
     """
@@ -1130,18 +1306,11 @@ def extract_bim_parameters(instances_dict):
     """
     bim_data = []
 
-    global_floor_z = 0.0
-    global_ceiling_z = 2.5
-
-    if 'floor' in instances_dict and len(instances_dict['floor']) > 0:
-        floor_pts = np.asarray(instances_dict['floor'][0].points)
-        global_floor_z = float(np.percentile(floor_pts[:, 2], 50))
-
-    if 'ceiling' in instances_dict and len(instances_dict['ceiling']) > 0:
-        ceil_pts = np.asarray(instances_dict['ceiling'][0].points)
-        global_ceiling_z = float(np.percentile(ceil_pts[:, 2], 50))
-
+    global_floor_z, global_ceiling_z = compute_room_levels(instances_dict)
     room_height = max(global_ceiling_z - global_floor_z, 0.0)
+    room_footprint = compute_room_footprint(instances_dict)
+    wall_refs = select_perimeter_wall_refs(instances_dict, room_footprint)
+    instances_dict = filter_instances_to_wall_refs(instances_dict, wall_refs)
 
     for class_name, pcd_list in instances_dict.items():
         for idx, pcd in enumerate(pcd_list):
@@ -1156,17 +1325,38 @@ def extract_bim_parameters(instances_dict):
                 half_extent = extent / 2.0
                 start = center - half_extent
                 end = center + half_extent
+                start_xy = np.asarray([start[0], start[1]], dtype=np.float32)
+                end_xy = np.asarray([end[0], end[1]], dtype=np.float32)
+
+                if class_name in ['door', 'window']:
+                    start_xy, end_xy = snap_linear_instance_to_wall(start_xy, end_xy, wall_refs)
+
+                if class_name == 'door':
+                    start[2] = global_floor_z
+                    end[2] = min(global_floor_z + max(extent[2], room_height * 0.35), global_ceiling_z)
+                elif class_name == 'window':
+                    start[2] = max(start[2], global_floor_z + room_height * 0.15)
+                    end[2] = min(end[2], global_ceiling_z - room_height * 0.10)
+                    if end[2] <= start[2]:
+                        end[2] = min(start[2] + max(extent[2], room_height * 0.18), global_ceiling_z)
+                elif class_name == 'column':
+                    start[2] = global_floor_z
+                    end[2] = global_ceiling_z
+                elif class_name == 'beam':
+                    start[2] = max(start[2], global_ceiling_z - room_height * 0.25)
+                    end[2] = global_ceiling_z
+
                 bim_obj = {
                     'id': f'{class_name}_{idx}',
                     'type': class_name,
-                    'height': float(extent[2]),
+                    'height': float(max(end[2] - start[2], 0.01)),
                     'thickness': float(min(extent[0], extent[1])),
                     'geometry': {
-                        'start_x': float(start[0]),
-                        'start_y': float(start[1]),
+                        'start_x': float(start_xy[0]),
+                        'start_y': float(start_xy[1]),
                         'start_z': float(start[2]),
-                        'end_x': float(end[0]),
-                        'end_y': float(end[1]),
+                        'end_x': float(end_xy[0]),
+                        'end_y': float(end_xy[1]),
                         'end_z': float(end[2])
                     }
                 }
@@ -1192,22 +1382,33 @@ def extract_bim_parameters(instances_dict):
             }
 
             if class_name == 'floor':
+                if room_footprint is not None:
+                    bim_obj['geometry']['start_x'] = room_footprint['min_x']
+                    bim_obj['geometry']['start_y'] = room_footprint['min_y']
+                    bim_obj['geometry']['end_x'] = room_footprint['max_x']
+                    bim_obj['geometry']['end_y'] = room_footprint['max_y']
                 bim_obj['geometry']['start_z'] = global_floor_z
                 bim_obj['geometry']['end_z'] = global_floor_z
             elif class_name == 'ceiling':
+                if room_footprint is not None:
+                    bim_obj['geometry']['start_x'] = room_footprint['min_x']
+                    bim_obj['geometry']['start_y'] = room_footprint['min_y']
+                    bim_obj['geometry']['end_x'] = room_footprint['max_x']
+                    bim_obj['geometry']['end_y'] = room_footprint['max_y']
                 bim_obj['geometry']['start_z'] = global_ceiling_z
                 bim_obj['geometry']['end_z'] = global_ceiling_z
             elif class_name == 'wall':
                 xy_pts = pts[:, :2]
                 line = oriented_line_from_wall_points(xy_pts)
+                wall_start, wall_end = clamp_wall_line_to_room(line, room_footprint)
                 bim_obj['height'] = float(room_height)
-                bim_obj['thickness'] = float(min(max(line['thickness'], 0.08), 0.5))
+                bim_obj['thickness'] = float(min(max(line['thickness'], 0.08), 0.35))
                 bim_obj['geometry']['start_z'] = global_floor_z
                 bim_obj['geometry']['end_z'] = global_floor_z
-                bim_obj['geometry']['start_x'] = float(line['start'][0])
-                bim_obj['geometry']['start_y'] = float(line['start'][1])
-                bim_obj['geometry']['end_x'] = float(line['end'][0])
-                bim_obj['geometry']['end_y'] = float(line['end'][1])
+                bim_obj['geometry']['start_x'] = float(wall_start[0])
+                bim_obj['geometry']['start_y'] = float(wall_start[1])
+                bim_obj['geometry']['end_x'] = float(wall_end[0])
+                bim_obj['geometry']['end_y'] = float(wall_end[1])
 
             bim_data.append(bim_obj)
 
@@ -1220,7 +1421,6 @@ def main(
     cube_edge=96,
     num_classes=7,
     device=None,
-    visualize_network_output=False,
     visualize_instances_flag=False,
     smoothing_k=None,
     wall_ransac_thresh=None,
@@ -1246,11 +1446,13 @@ def main(
         wall_ransac_thresh = auto_config['wall_ransac_thresh']
     if floor_ceiling_ransac_thresh is None:
         floor_ceiling_ransac_thresh = auto_config['floor_ceiling_ransac_thresh']
+    wall_ransac_thresh = max(wall_ransac_thresh, 0.045)
+    floor_ceiling_ransac_thresh = max(floor_ceiling_ransac_thresh, 0.03)
 
     print("\nLoading BIMNet models...")
     models = build_models(checkpoint_paths, device, num_classes=num_classes)
 
-    pcd, preds_volume, points_grid, point_labels = run_bimnet_inference(
+    pcd, _, _, point_labels = run_bimnet_inference(
         pcd, models, cube_edge=cube_edge, num_classes=num_classes, device=device
     )
 
@@ -1306,7 +1508,7 @@ def main(
                 wall_source,
                 radius=max(0.08, wall_ransac_thresh * 1.5),
                 max_nn=40,
-                vertical_normal_z_max=0.35
+                vertical_normal_z_max=0.45
             )
             print(f"  Wall recovery source has {len(wall_source.points)} structural candidate points")
             raw_segments = instantiate_oriented_planes(
@@ -1316,7 +1518,7 @@ def main(
                 min_points=100,
                 max_instances=32,
                 orientation='vertical',
-                normal_z_max_for_vertical=0.25,
+                normal_z_max_for_vertical=0.35,
             )
             instances = merge_collinear_walls(raw_segments)
             wall_instances = instances
@@ -1335,16 +1537,17 @@ def main(
     ceiling_points = len(instantiation_classes.get('ceiling', o3d.geometry.PointCloud()).points)
     floor_points = len(instantiation_classes.get('floor', o3d.geometry.PointCloud()).points)
     cleaning_thresholds = {
-        'ceiling': max(300, min(2000, int(ceiling_points * 0.05))) if ceiling_points > 0 else 300,
-        'floor': max(300, min(2000, int(floor_points * 0.05))) if floor_points > 0 else 300,
-        'wall': 1000,
-        'beam': 50,
-        'column': 50,
-        'window': 20,
-        'door': 50,
+        'ceiling': max(200, min(1200, int(ceiling_points * 0.03))) if ceiling_points > 0 else 200,
+        'floor': max(200, min(1200, int(floor_points * 0.03))) if floor_points > 0 else 200,
+        'wall': 600,
+        'beam': 30,
+        'column': 30,
+        'window': 10,
+        'door': 30,
     }
 
-    all_instances = filter_small_instances(all_instances, cleaning_thresholds)
+    # Validation disabled for debugging: skip final small-instance cleanup.
+    # all_instances = filter_small_instances(all_instances, cleaning_thresholds)
     output_instances = scale_instances_dict(all_instances, 1.0 / scale_factor) if abs(scale_factor - 1.0) > 1e-8 else all_instances
 
     print("\nStep 3: Extracting BIM Parameters and Saving...")
@@ -1370,7 +1573,6 @@ if __name__ == "__main__":
     parser.add_argument("--cube_edge", type=int, default=96, help="Voxel grid edge length")
     parser.add_argument("--num_classes", type=int, default=7, help="Number of BIMNet output classes")
     parser.add_argument("--cpu", action="store_true", help="Force CPU")
-    parser.add_argument("--vis-net", action="store_true", help="Visualize BIMNet output")
     parser.add_argument("--vis-instances", action="store_true", help="Visualize DBSCAN instances")
     parser.add_argument("--smooth-k", type=int, default=None, help="K for KNN smoothing; auto-estimated if omitted")
     parser.add_argument("--wall-ransac-thresh", type=float, default=None, help="RANSAC distance threshold for wall extraction; auto-estimated if omitted")
@@ -1387,7 +1589,6 @@ if __name__ == "__main__":
         cube_edge=args.cube_edge,
         num_classes=args.num_classes,
         device=device,
-        visualize_network_output=args.vis_net,
         visualize_instances_flag=args.vis_instances,
         smoothing_k=args.smooth_k,
         wall_ransac_thresh=args.wall_ransac_thresh,
