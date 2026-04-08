@@ -130,6 +130,21 @@ const uploadBlobToStorage = async (
   }
 };
 
+const removeStoragePaths = async (paths: string[]) => {
+  const uniquePaths = Array.from(new Set(paths.filter(Boolean)));
+  if (uniquePaths.length === 0) {
+    return;
+  }
+
+  const { error } = await supabase.storage
+    .from(SUPABASE_STORAGE_BUCKET)
+    .remove(uniquePaths);
+
+  if (error) {
+    throw error;
+  }
+};
+
 export const listProjects = async (userId: string) => {
   const { data, error } = await supabase
     .from('projects')
@@ -213,4 +228,37 @@ export const createProject = async ({
   }
 
   return mapProjectRow(data as ProjectRow);
+};
+
+export const deleteProject = async (projectId: string, userId: string) => {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .eq('id', projectId)
+    .eq('user_id', userId)
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  const row = data as ProjectRow;
+  await removeStoragePaths([
+    row.raw_file_path || '',
+    row.semantic_file_path || '',
+    row.instanced_file_path || '',
+    row.bim_obj_file_path || '',
+    row.bim_ifc_file_path || '',
+    row.bim_props_file_path || '',
+  ]);
+
+  const { error: deleteError } = await supabase
+    .from('projects')
+    .delete()
+    .eq('id', projectId)
+    .eq('user_id', userId);
+
+  if (deleteError) {
+    throw deleteError;
+  }
 };

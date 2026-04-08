@@ -25,6 +25,22 @@ interface Project {
   pointCloudUrl?: string;
 }
 
+interface SelectedProjectState {
+  id?: string;
+  image: string;
+  title: string;
+  buildingType?: string;
+  canDelete: boolean;
+  urls?: {
+    raw?: string;
+    semantic?: string;
+    instanced?: string;
+    bim?: string;
+    bimIfc?: string;
+    bimProps?: string;
+  };
+}
+
 function FilterIcon() {
   return (
     <div className="relative shrink-0 w-[1.42vw] h-[1.42vw]" data-name="Filter Icon">
@@ -143,6 +159,8 @@ export default function DesktopProjectLibrary({
   onNavigateLibrary,
   onOpenUpload,
   projects = [],
+  deletingProjectId,
+  onDeleteProject,
   authButtonLabel,
   onAuthButtonClick,
 }: {
@@ -151,20 +169,12 @@ export default function DesktopProjectLibrary({
   onNavigateLibrary: () => void;
   onOpenUpload: () => void;
   projects?: Project[];
+  deletingProjectId?: string | null;
+  onDeleteProject?: (projectId: string) => Promise<void>;
   authButtonLabel?: string;
   onAuthButtonClick?: () => void;
 }) {
-  const [selectedProject, setSelectedProject] = useState<string | null>(null);
-  const [selectedPointCloud, setSelectedPointCloud] = useState<{
-    raw?: string;
-    semantic?: string;
-    instanced?: string;
-    bim?: string;
-    bimIfc?: string;
-    bimProps?: string;
-  } | undefined>(undefined);
-  const [selectedTitle, setSelectedTitle] = useState<string>('');
-  const [selectedBuildingType, setSelectedBuildingType] = useState<string | undefined>(undefined);
+  const [selectedProject, setSelectedProject] = useState<SelectedProjectState | null>(null);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
   const [isSortOpen, setIsSortOpen] = useState(false);
@@ -206,9 +216,11 @@ export default function DesktopProjectLibrary({
   };
 
   const handleProjectClick = (
+    id: string | undefined,
     image: string,
     title: string,
     buildingType?: string,
+    canDelete = false,
     urls?: {
       raw?: string;
       semantic?: string;
@@ -218,10 +230,28 @@ export default function DesktopProjectLibrary({
       bimProps?: string;
     }
   ) => {
-    setSelectedProject(image);
-    setSelectedTitle(title);
-    setSelectedBuildingType(buildingType);
-    setSelectedPointCloud(urls);
+    setSelectedProject({
+      id,
+      image,
+      title,
+      buildingType,
+      canDelete,
+      urls,
+    });
+  };
+
+  const handleDeleteSelectedProject = async () => {
+    if (!selectedProject?.id || !selectedProject.canDelete || !onDeleteProject) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${selectedProject.title}"? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
+    await onDeleteProject(selectedProject.id);
+    setSelectedProject(null);
   };
 
   return (
@@ -255,7 +285,7 @@ export default function DesktopProjectLibrary({
             date={project.date}
             left={position.left}
             top={position.top}
-            onClick={() => handleProjectClick(project.image || img59L6StudyRoomBasePicture1, project.title, project.buildingType, {
+            onClick={() => handleProjectClick(project.id, project.image || img59L6StudyRoomBasePicture1, project.title, project.buildingType, true, {
               raw: project.pointCloudRawUrl,
               semantic: project.pointCloudSemanticUrl,
               instanced: project.pointCloudInstancedUrl,
@@ -275,7 +305,7 @@ export default function DesktopProjectLibrary({
         date="12 November 2025"
         left={getGridPosition(1 + projects.length).left}
         top={getGridPosition(1 + projects.length).top}
-        onClick={() => handleProjectClick(img59L6StudyRoomBasePicture1, "SUTD Blk 59 - Level 6 Study Room")}
+        onClick={() => handleProjectClick(undefined, img59L6StudyRoomBasePicture1, "SUTD Blk 59 - Level 6 Study Room")}
       />
       
       {/* Row 1 - Position 3 */}
@@ -285,7 +315,7 @@ export default function DesktopProjectLibrary({
         date="31 October 2025"
         left={getGridPosition(2 + projects.length).left}
         top={getGridPosition(2 + projects.length).top}
-        onClick={() => handleProjectClick(img55L6RecreRoomBasePicture1, "SUTD Blk 55 - Level 6 Recreational Room")}
+        onClick={() => handleProjectClick(undefined, img55L6RecreRoomBasePicture1, "SUTD Blk 55 - Level 6 Recreational Room")}
       />
       
       {/* Row 2 - Position 1 */}
@@ -295,7 +325,7 @@ export default function DesktopProjectLibrary({
         date="13 May 2025"
         left={getGridPosition(3 + projects.length).left}
         top={getGridPosition(3 + projects.length).top}
-        onClick={() => handleProjectClick(imgB55L6MusicRoomBasePicture1, "SUTD Blk 55 - Music Room")}
+        onClick={() => handleProjectClick(undefined, imgB55L6MusicRoomBasePicture1, "SUTD Blk 55 - Music Room")}
       />
       
       {/* Row 2 - Position 2 */}
@@ -305,7 +335,7 @@ export default function DesktopProjectLibrary({
         date="6 July 2024"
         left={getGridPosition(4 + projects.length).left}
         top={getGridPosition(4 + projects.length).top}
-        onClick={() => handleProjectClick(imgHostelRoomBasePicture1, "SUTD Blk 55 - Hostel Room")}
+        onClick={() => handleProjectClick(undefined, imgHostelRoomBasePicture1, "SUTD Blk 55 - Hostel Room")}
       />
       
       {/* Row 2 - Position 3 */}
@@ -315,7 +345,7 @@ export default function DesktopProjectLibrary({
         date="25 April 2024"
         left={getGridPosition(5 + projects.length).left}
         top={getGridPosition(5 + projects.length).top}
-        onClick={() => handleProjectClick(img59L2DanceroomBasePicture1, "SUTD Blk 59 - Level 2 Dance Room")}
+        onClick={() => handleProjectClick(undefined, img59L2DanceroomBasePicture1, "SUTD Blk 59 - Level 2 Dance Room")}
       />
       
       {/* Header */}
@@ -334,22 +364,22 @@ export default function DesktopProjectLibrary({
       {/* Model Viewer */}
       {selectedProject && (
         <ModelViewer
-          projectTitle={selectedTitle}
-          buildingType={selectedBuildingType}
+          projectTitle={selectedProject.title}
+          buildingType={selectedProject.buildingType}
+          canDeleteProject={selectedProject.canDelete}
+          isDeletingProject={deletingProjectId === selectedProject.id}
+          onDeleteProject={selectedProject.canDelete ? handleDeleteSelectedProject : undefined}
           onClose={() => {
             setSelectedProject(null);
-            setSelectedTitle('');
-            setSelectedBuildingType(undefined);
-            setSelectedPointCloud(undefined);
           }}
           onNavigateHome={onNavigateHome}
           onNavigateGetStarted={onNavigateGetStarted}
           onNavigateLibrary={onNavigateLibrary}
-          rawPointCloudUrl={selectedPointCloud?.raw}
-          instancedPointCloudUrl={selectedPointCloud?.instanced}
-          bimModelUrl={selectedPointCloud?.bim}
-          bimIfcUrl={selectedPointCloud?.bimIfc}
-          bimPropsUrl={selectedPointCloud?.bimProps}
+          rawPointCloudUrl={selectedProject.urls?.raw}
+          instancedPointCloudUrl={selectedProject.urls?.instanced}
+          bimModelUrl={selectedProject.urls?.bim}
+          bimIfcUrl={selectedProject.urls?.bimIfc}
+          bimPropsUrl={selectedProject.urls?.bimProps}
         />
       )}
       
