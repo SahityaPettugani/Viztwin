@@ -15,6 +15,7 @@ import {
   type ProcessPointCloudResult,
   type Project,
 } from '../lib/projects';
+import { absolutizeUrl, toApiUrl } from '../lib/api';
 import { supabase, supabaseConfigError } from '../lib/supabase';
 
 interface ProjectFormData {
@@ -30,6 +31,19 @@ const emptyFormData: ProjectFormData = {
   country: '',
   buildingType: '',
 };
+
+const normalizeProcessResultUrls = (processResult: ProcessPointCloudResult): ProcessPointCloudResult => ({
+  ...processResult,
+  semanticUrl: absolutizeUrl(processResult.semanticUrl),
+  instancedUrl: absolutizeUrl(processResult.instancedUrl),
+  bimIfcUrl: absolutizeUrl(processResult.bimIfcUrl),
+  bimObjUrl: absolutizeUrl(processResult.bimObjUrl),
+  bimPropsUrl: absolutizeUrl(processResult.bimPropsUrl),
+  generatedFiles: processResult.generatedFiles?.map((file) => ({
+    ...file,
+    url: absolutizeUrl(file.url) || file.url,
+  })),
+});
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -156,7 +170,7 @@ export default function App() {
       const processFormData = new FormData();
       processFormData.append('file', uploadedFile);
 
-      const processResponse = await fetch('/api/process-pointcloud', {
+      const processResponse = await fetch(toApiUrl('/api/process-pointcloud'), {
         method: 'POST',
         body: processFormData,
         signal: uploadAbortController.current.signal,
@@ -164,7 +178,7 @@ export default function App() {
 
       let processResult: ProcessPointCloudResult = { success: false };
       if (processResponse.ok) {
-        processResult = (await processResponse.json()) as ProcessPointCloudResult;
+        processResult = normalizeProcessResultUrls((await processResponse.json()) as ProcessPointCloudResult);
       } else {
         const errorData = await processResponse.json().catch(() => ({}));
         throw new Error(errorData.error || 'Point cloud processing failed.');

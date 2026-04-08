@@ -1473,7 +1473,7 @@ export default function ModelViewer({
           </div>
 
           {activePointCloudUrl && (
-            <div className="absolute top-[4.8vw] right-[1.04vw] z-10 bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
+            <div className="absolute top-[6.4vw] left-[1.04vw] z-10 max-w-[18vw] bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] px-[0.78vw] py-[0.62vw] shadow-sm">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.83vw] text-[#000001] mb-[0.52vw]">
                 Point Cloud Colors
               </p>
