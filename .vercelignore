@@ -1,0 +1,10 @@
+*
+
+!src/**
+!utils/**
+!index.html
+!package.json
+!package-lock.json
+!vite.config.ts
+!postcss.config.mjs
+!vercel.json
