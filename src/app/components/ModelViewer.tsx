@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from 'react';
+import { ChevronDown, ChevronRight, Pencil, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { StandardizedHeaderS } from '../../imports/SharedHeader';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
@@ -12,8 +12,10 @@ interface ModelViewerProps {
   buildingType?: string;
   canDeleteProject?: boolean;
   isDeletingProject?: boolean;
+  isRenamingProject?: boolean;
   onClose: () => void;
   onDeleteProject?: () => Promise<void> | void;
+  onRenameProject?: (title: string) => Promise<void> | void;
   onNavigateHome: () => void;
   onNavigateGetStarted: () => void;
   onNavigateLibrary: () => void;
@@ -623,6 +625,7 @@ function ThreeScene({
 
       normalizedGroup.scale.setScalar(1);
       contentGroup.position.set(0, 0, 0);
+      gridHelper.position.set(0, 0, 0);
       contentGroup.updateMatrixWorld(true);
 
       const box = new THREE.Box3().setFromObject(contentGroup);
@@ -638,6 +641,13 @@ function ThreeScene({
       contentGroup.position.set(-center.x, -center.y, -center.z);
       const normalizedScale = 5 / maxDim;
       normalizedGroup.scale.setScalar(normalizedScale);
+      normalizedGroup.updateMatrixWorld(true);
+
+      const normalizedBox = new THREE.Box3().setFromObject(normalizedGroup);
+      if (!normalizedBox.isEmpty()) {
+        gridHelper.position.z = normalizedBox.min.z;
+      }
+
       contentSizeRef.current.copy(size).multiplyScalar(normalizedScale);
       orbitRadiusRef.current = Math.max(8, Math.max(contentSizeRef.current.x, contentSizeRef.current.y, contentSizeRef.current.z) * 2.4);
       applyCameraPreset(presetRef.current);
@@ -1008,8 +1018,10 @@ export default function ModelViewer({
   buildingType,
   canDeleteProject,
   isDeletingProject,
+  isRenamingProject,
   onClose,
   onDeleteProject,
+  onRenameProject,
   onNavigateHome,
   onNavigateGetStarted,
   onNavigateLibrary,
@@ -1045,6 +1057,8 @@ export default function ModelViewer({
   const [pointCloudLegend, setPointCloudLegend] = useState<LegendItem[]>([]);
   const [elementVisibility, setElementVisibility] = useState<Record<string, boolean>>({});
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [draftProjectTitle, setDraftProjectTitle] = useState(projectTitle);
   const uploadedFileName = getUploadedFileNameFromUrl(rawPointCloudUrl);
 
   const handleDeleteClick = async () => {
@@ -1058,6 +1072,52 @@ export default function ModelViewer({
       // Deletion errors are handled by the caller.
     }
   };
+
+  const handleStartTitleEdit = () => {
+    setDraftProjectTitle(projectTitle);
+    setIsEditingTitle(true);
+  };
+
+  const handleCancelTitleEdit = () => {
+    setDraftProjectTitle(projectTitle);
+    setIsEditingTitle(false);
+  };
+
+  const handleSaveTitle = async () => {
+    const nextTitle = draftProjectTitle.trim();
+    if (!onRenameProject || isRenamingProject) {
+      return;
+    }
+
+    if (!nextTitle) {
+      alert('Project name cannot be empty.');
+      return;
+    }
+
+    try {
+      await onRenameProject(nextTitle);
+      setIsEditingTitle(false);
+    } catch {
+      // Rename errors are handled by the caller.
+    }
+  };
+
+  const handleTitleKeyDown = async (event: KeyboardEvent<HTMLHeadingElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      await handleSaveTitle();
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      handleCancelTitleEdit();
+    }
+  };
+
+  useEffect(() => {
+    setDraftProjectTitle(projectTitle);
+  }, [projectTitle]);
 
   useEffect(() => {
     setExpandedCategories((current) => {
@@ -1467,9 +1527,42 @@ export default function ModelViewer({
           {/* Center - 3D Canvas */}
         <div className="flex-1 relative bg-[#fafafa]">
           <div className="absolute top-[1.04vw] left-[1.04vw] z-10">
-            <h1 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.56vw] text-[#000001]">
-              {projectTitle}
-            </h1>
+            <div className="flex items-center gap-[0.62vw]">
+              <h1
+                className={`min-w-[18vw] font-['Satoshi_Variable:Bold',sans-serif] text-[1.56vw] text-[#000001] outline-none ${isEditingTitle ? 'cursor-text' : ''}`}
+                contentEditable={isEditingTitle}
+                suppressContentEditableWarning
+                onInput={(event) => setDraftProjectTitle(event.currentTarget.textContent || '')}
+                onKeyDown={handleTitleKeyDown}
+                onBlur={() => {
+                  if (isEditingTitle && !isRenamingProject) {
+                    void handleSaveTitle();
+                  }
+                }}
+                ref={(element) => {
+                  if (isEditingTitle && element) {
+                    element.focus();
+                    const selection = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(element);
+                    range.collapse(false);
+                    selection?.removeAllRanges();
+                    selection?.addRange(range);
+                  }
+                }}
+              >
+                {isEditingTitle ? draftProjectTitle : projectTitle}
+              </h1>
+              {onRenameProject ? (
+                <button
+                  type="button"
+                  onClick={handleStartTitleEdit}
+                  className="inline-flex items-center justify-center rounded-[0.52vw] border border-[#d7d7d7] bg-white p-[0.42vw] text-[#333333] transition-colors hover:bg-[#f5f5f5]"
+                >
+                  <Pencil className="h-[0.83vw] w-[0.83vw]" />
+                </button>
+              ) : null}
+            </div>
           </div>
 
           {activePointCloudUrl && (
@@ -1495,20 +1588,29 @@ export default function ModelViewer({
             </div>
           )}
 
-          {/* Zoom Controls */}
+          {/* Viewer Controls */}
           <div className="absolute bottom-[1.56vw] right-[1.56vw] flex flex-col gap-[0.52vw] z-10">
+            <div className="rounded-[0.62vw] border border-[#d7d7d7] bg-white/92 p-[0.42vw] shadow-sm">
+              <p className="px-[0.36vw] pb-[0.3vw] font-['Satoshi_Variable:Bold',sans-serif] text-[0.62vw] uppercase tracking-[0.1em] text-[#666666]">
+                View
+              </p>
+              <div className="flex flex-col gap-[0.42vw]">
             <button
               onClick={() => setZoomCommand({ type: 'in', nonce: Date.now() })}
               className="bg-white border border-[#d7d7d7] p-[0.78vw] rounded-[0.52vw] hover:bg-[#f5f5f5] transition-colors"
+              title="Zoom in"
             >
               <ZoomIn className="w-[1.25vw] h-[1.25vw]" />
             </button>
             <button
               onClick={() => setZoomCommand({ type: 'out', nonce: Date.now() })}
               className="bg-white border border-[#d7d7d7] p-[0.78vw] rounded-[0.52vw] hover:bg-[#f5f5f5] transition-colors"
+              title="Zoom out"
             >
               <ZoomOut className="w-[1.25vw] h-[1.25vw]" />
             </button>
+              </div>
+            </div>
           </div>
 
           {availableTabs.length > 1 && (

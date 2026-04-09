@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 
@@ -371,65 +372,384 @@ def instantiate_planar_iterative(pcd, class_name, dist_thresh=0.20, min_points=5
     return instances
 
 
+def _quantile_range(values, lo=0.02, hi=0.98):
+    return float(np.quantile(values, lo)), float(np.quantile(values, hi))
+
+
+def _fit_linear_geometry(xy_pts, snap_to_ortho=False):
+    from sklearn.decomposition import PCA
+
+    pca = PCA(n_components=2)
+    pca.fit(xy_pts)
+
+    direction = pca.components_[0]
+    direction = direction / (np.linalg.norm(direction) + 1e-12)
+
+    if snap_to_ortho:
+        angle = math.atan2(direction[1], direction[0])
+        snapped_angle = round(angle / (math.pi / 2.0)) * (math.pi / 2.0)
+        if abs(angle - snapped_angle) <= math.radians(12.0):
+            direction = np.array([math.cos(snapped_angle), math.sin(snapped_angle)], dtype=float)
+
+    normal2d = np.array([-direction[1], direction[0]], dtype=float)
+    center = xy_pts.mean(axis=0)
+
+    proj_main = (xy_pts - center) @ direction
+    proj_side = (xy_pts - center) @ normal2d
+    main_min, main_max = _quantile_range(proj_main)
+    side_min, side_max = _quantile_range(proj_side, 0.05, 0.95)
+
+    start_pt = center + direction * main_min
+    end_pt = center + direction * main_max
+    thickness = float(max(0.05, side_max - side_min))
+
+    return start_pt, end_pt, thickness
+
+
+def _to_xy_from_geometry(geometry, start=True):
+    if start:
+        return np.array([float(geometry["start_x"]), float(geometry["start_y"])], dtype=float)
+    return np.array([float(geometry["end_x"]), float(geometry["end_y"])], dtype=float)
+
+
+def _segment_dir(a, b):
+    d = b - a
+    return d / (np.linalg.norm(d) + 1e-12)
+
+
+def _point_to_segment_distance(p, a, b):
+    ab = b - a
+    denom = float(np.dot(ab, ab))
+    if denom < 1e-12:
+        return float(np.linalg.norm(p - a))
+    t = float(np.dot(p - a, ab) / denom)
+    t = max(0.0, min(1.0, t))
+    proj = a + t * ab
+    return float(np.linalg.norm(p - proj))
+
+
+def _projection_interval(a, b, origin, d_unit):
+    ta = float(np.dot(a - origin, d_unit))
+    tb = float(np.dot(b - origin, d_unit))
+    return min(ta, tb), max(ta, tb)
+
+
+def _line_intersection(p1, p2, q1, q2):
+    x1, y1 = p1
+    x2, y2 = p2
+    x3, y3 = q1
+    x4, y4 = q2
+    den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(den) < 1e-12:
+        return None
+    px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / den
+    py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / den
+    return np.array([px, py], dtype=float)
+
+
+def _angle_parallel(d1, d2, tol_deg=10.0):
+    c = abs(float(np.dot(d1, d2)))
+    c = min(1.0, max(-1.0, c))
+    ang = math.degrees(math.acos(c))
+    return ang <= tol_deg
+
+
+def _merge_collinear_walls(walls, angle_tol_deg=8.0, offset_tol=0.2, gap_tol=0.4):
+    merged = []
+    used = [False] * len(walls)
+
+    for i, wi in enumerate(walls):
+        if used[i]:
+            continue
+        used[i] = True
+        group_idx = [i]
+
+        ai = _to_xy_from_geometry(wi["geometry"], start=True)
+        bi = _to_xy_from_geometry(wi["geometry"], start=False)
+        di = _segment_dir(ai, bi)
+
+        for j in range(i + 1, len(walls)):
+            if used[j]:
+                continue
+            wj = walls[j]
+            aj = _to_xy_from_geometry(wj["geometry"], start=True)
+            bj = _to_xy_from_geometry(wj["geometry"], start=False)
+            dj = _segment_dir(aj, bj)
+            if not _angle_parallel(di, dj, tol_deg=angle_tol_deg):
+                continue
+            if _point_to_segment_distance(aj, ai, bi) > offset_tol and _point_to_segment_distance(bj, ai, bi) > offset_tol:
+                continue
+
+            i0, i1 = _projection_interval(ai, bi, ai, di)
+            j0, j1 = _projection_interval(aj, bj, ai, di)
+            separated_gap = max(i0, j0) - min(i1, j1)
+            if separated_gap > gap_tol:
+                continue
+
+            used[j] = True
+            group_idx.append(j)
+
+        if len(group_idx) == 1:
+            merged.append(wi)
+            continue
+
+        pts = []
+        heights = []
+        thicknesses = []
+        openings = []
+        z_vals = []
+        for k in group_idx:
+            wall = walls[k]
+            pts.extend(
+                [
+                    _to_xy_from_geometry(wall["geometry"], start=True),
+                    _to_xy_from_geometry(wall["geometry"], start=False),
+                ]
+            )
+            heights.append(float(wall.get("height", 0.0)))
+            thicknesses.append(float(wall.get("thickness", 0.2)))
+            z_vals.append(float(wall["geometry"].get("start_z", 0.0)))
+            openings.extend(wall.get("openings", []))
+
+        ts = [float(np.dot(p - ai, di)) for p in pts]
+        start_pt = ai + min(ts) * di
+        end_pt = ai + max(ts) * di
+
+        merged_wall = dict(wi)
+        merged_wall["height"] = max(heights) if heights else float(wi.get("height", 0.0))
+        merged_wall["thickness"] = float(np.median(thicknesses)) if thicknesses else float(wi.get("thickness", 0.2))
+        merged_wall["openings"] = openings
+        z_base = float(np.median(z_vals)) if z_vals else float(wi["geometry"].get("start_z", 0.0))
+        merged_wall["geometry"] = {
+            "start_x": float(start_pt[0]),
+            "start_y": float(start_pt[1]),
+            "start_z": z_base,
+            "end_x": float(end_pt[0]),
+            "end_y": float(end_pt[1]),
+            "end_z": z_base,
+        }
+        merged.append(merged_wall)
+
+    return merged
+
+
+def _snap_wall_endpoints_to_intersections(walls, endpoint_snap_tol=0.45, line_proximity_tol=0.25):
+    segs = [
+        (
+            _to_xy_from_geometry(w["geometry"], start=True),
+            _to_xy_from_geometry(w["geometry"], start=False),
+        )
+        for w in walls
+    ]
+
+    for i in range(len(walls)):
+        ai, bi = segs[i]
+        best_start = None
+        best_end = None
+        best_ds = 1e18
+        best_de = 1e18
+
+        for j in range(len(walls)):
+            if i == j:
+                continue
+            aj, bj = segs[j]
+            inter = _line_intersection(ai, bi, aj, bj)
+            if inter is None:
+                continue
+            if _point_to_segment_distance(inter, ai, bi) > line_proximity_tol:
+                continue
+            if _point_to_segment_distance(inter, aj, bj) > line_proximity_tol:
+                continue
+
+            ds = float(np.linalg.norm(inter - ai))
+            de = float(np.linalg.norm(inter - bi))
+            if ds < best_ds and ds <= endpoint_snap_tol:
+                best_ds = ds
+                best_start = inter
+            if de < best_de and de <= endpoint_snap_tol:
+                best_de = de
+                best_end = inter
+
+        if best_start is not None:
+            walls[i]["geometry"]["start_x"] = float(best_start[0])
+            walls[i]["geometry"]["start_y"] = float(best_start[1])
+        if best_end is not None:
+            walls[i]["geometry"]["end_x"] = float(best_end[0])
+            walls[i]["geometry"]["end_y"] = float(best_end[1])
+
+    return walls
+
+
+def _attach_openings_to_walls(walls, openings):
+    for wall in walls:
+        wall.setdefault("openings", [])
+
+    for opening in openings:
+        geom = opening.get("geometry", {})
+        center = np.array(
+            [
+                0.5 * (float(geom["start_x"]) + float(geom["end_x"])),
+                0.5 * (float(geom["start_y"]) + float(geom["end_y"])),
+            ],
+            dtype=float,
+        )
+        span_xy = float(
+            np.linalg.norm(
+                [
+                    float(geom["end_x"]) - float(geom["start_x"]),
+                    float(geom["end_y"]) - float(geom["start_y"]),
+                ]
+            )
+        )
+        z_min = float(geom.get("start_z", 0.0))
+        z_max = z_min + float(opening.get("height", 0.0))
+
+        best_wall = None
+        best_dist = 1e18
+        best_proj = None
+
+        for wall in walls:
+            wgeom = wall["geometry"]
+            a = _to_xy_from_geometry(wgeom, start=True)
+            b = _to_xy_from_geometry(wgeom, start=False)
+            d = _segment_dir(a, b)
+            wall_len = float(np.linalg.norm(b - a))
+            wall_thickness = float(wall.get("thickness", 0.2))
+            center_dist = _point_to_segment_distance(center, a, b)
+            if center_dist > max(0.35, wall_thickness * 1.8):
+                continue
+
+            proj = float(np.dot(center - a, d))
+            if proj < -0.2 or proj > wall_len + 0.2:
+                continue
+
+            if center_dist < best_dist:
+                best_dist = center_dist
+                best_wall = wall
+                best_proj = proj
+
+        if best_wall is None:
+            continue
+
+        wall_len = float(
+            np.linalg.norm(
+                _to_xy_from_geometry(best_wall["geometry"], start=False)
+                - _to_xy_from_geometry(best_wall["geometry"], start=True)
+            )
+        )
+        half_span = max(0.25, span_xy * 0.5)
+        x_start = max(0.0, best_proj - half_span)
+        x_end = min(wall_len, best_proj + half_span)
+        if x_end <= x_start:
+            continue
+
+        best_wall["openings"].append(
+            {
+                "id": opening["id"],
+                "type": opening["type"],
+                "x_range_start": float(x_start),
+                "x_range_end": float(x_end),
+                "z_range_min": z_min,
+                "z_range_max": z_max,
+            }
+        )
+
+
 def extract_bim_parameters(instances_dict):
     bim_data = []
+    walls = []
+    openings = []
+
+    wall_pts_all = []
+    for wall_pcd in instances_dict.get("wall", []):
+        pts = np.asarray(wall_pcd.points)
+        if len(pts) >= 500:
+            wall_pts_all.append(pts)
+
+    if wall_pts_all:
+        wall_all = np.vstack(wall_pts_all)
+        wx0, wx1 = _quantile_range(wall_all[:, 0])
+        wy0, wy1 = _quantile_range(wall_all[:, 1])
+    else:
+        wx0 = wx1 = wy0 = wy1 = None
 
     for class_name, pcd_list in instances_dict.items():
         for idx, pcd in enumerate(pcd_list):
             pts = np.asarray(pcd.points)
             if len(pts) < 50:
                 continue
-            x_min, x_max = pts[:, 0].min(), pts[:, 0].max()
-            y_min, y_max = pts[:, 1].min(), pts[:, 1].max()
-            z_min, z_max = pts[:, 2].min(), pts[:, 2].max()
+            x_min, x_max = _quantile_range(pts[:, 0])
+            y_min, y_max = _quantile_range(pts[:, 1])
+            z_min, z_max = _quantile_range(pts[:, 2])
             height = z_max - z_min
-            thickness = 0.2
+            if class_name in ["floor", "ceiling"]:
+                slab_x0 = wx0 if wx0 is not None else x_min
+                slab_x1 = wx1 if wx1 is not None else x_max
+                slab_y0 = wy0 if wy0 is not None else y_min
+                slab_y1 = wy1 if wy1 is not None else y_max
+
+                bim_obj = {
+                    "id": f"{class_name}_{idx}",
+                    "type": class_name,
+                    "height": float(height),
+                    "thickness": 0.2,
+                    "geometry": {
+                        "start_x": float(slab_x0),
+                        "start_y": float(slab_y0),
+                        "start_z": float(z_min),
+                        "end_x": float(slab_x1),
+                        "end_y": float(slab_y1),
+                        "end_z": float(z_min),
+                    },
+                    "polygon": [
+                        [float(slab_x0), float(slab_y0)],
+                        [float(slab_x1), float(slab_y0)],
+                        [float(slab_x1), float(slab_y1)],
+                        [float(slab_x0), float(slab_y1)],
+                    ],
+                }
+                bim_data.append(bim_obj)
+                continue
+
+            start_pt, end_pt, fitted_thickness = _fit_linear_geometry(
+                pts[:, :2],
+                snap_to_ortho=class_name in ["wall", "beam", "column", "window", "door"],
+            )
+
+            if class_name == "wall":
+                thickness = float(np.clip(fitted_thickness, 0.08, 0.6))
+            elif class_name in ["window", "door"]:
+                thickness = float(np.clip(fitted_thickness, 0.05, 0.25))
+            else:
+                thickness = float(np.clip(fitted_thickness, 0.08, 0.8))
+
             bim_obj = {
                 "id": f"{class_name}_{idx}",
                 "type": class_name,
                 "height": float(height),
-                "thickness": float(thickness),
+                "thickness": thickness,
                 "geometry": {
-                    "start_x": float(x_min),
-                    "start_y": float(y_min),
+                    "start_x": float(start_pt[0]),
+                    "start_y": float(start_pt[1]),
                     "start_z": float(z_min),
-                    "end_x": float(x_max),
-                    "end_y": float(y_max),
+                    "end_x": float(end_pt[0]),
+                    "end_y": float(end_pt[1]),
                     "end_z": float(z_min),
                 },
             }
 
-            if class_name == "floor":
-                bim_obj["geometry"]["start_z"] = float(z_min)
-                bim_obj["geometry"]["end_z"] = float(z_min)
-            elif class_name == "ceiling":
-                bim_obj["geometry"]["start_z"] = float(z_min / 2)
-                bim_obj["geometry"]["end_z"] = float(z_min / 2)
+            if class_name == "wall":
+                walls.append(bim_obj)
+            elif class_name in ["window", "door"]:
+                openings.append(bim_obj)
+                bim_data.append(bim_obj)
             else:
-                xy_pts = pts[:, :2]
-                from sklearn.decomposition import PCA
+                bim_data.append(bim_obj)
 
-                pca = PCA(n_components=2)
-                pca.fit(xy_pts)
-
-                direction = pca.components_[0]
-                center = xy_pts.mean(axis=0)
-
-                projected = xy_pts @ direction
-                p_min, p_max = projected.min(), projected.max()
-
-                start_pt = center + direction * (p_min - projected.mean())
-                end_pt = center + direction * (p_max - projected.mean())
-
-                bim_obj["geometry"]["start_x"] = float(start_pt[0])
-                bim_obj["geometry"]["end_x"] = float(end_pt[0])
-                bim_obj["geometry"]["start_y"] = float(start_pt[1])
-                bim_obj["geometry"]["end_y"] = float(end_pt[1])
-                bim_obj["geometry"]["start_z"] = float(z_min)
-                bim_obj["geometry"]["end_z"] = float(z_min)
-
-            bim_data.append(bim_obj)
-
+    walls = _merge_collinear_walls(walls)
+    walls = _snap_wall_endpoints_to_intersections(walls)
+    _attach_openings_to_walls(walls, openings)
+    bim_data.extend(walls)
     return bim_data
 
 

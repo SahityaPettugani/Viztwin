@@ -160,7 +160,9 @@ export default function DesktopProjectLibrary({
   onOpenUpload,
   projects = [],
   deletingProjectId,
+  renamingProjectId,
   onDeleteProject,
+  onRenameProject,
   authButtonLabel,
   onAuthButtonClick,
 }: {
@@ -170,7 +172,9 @@ export default function DesktopProjectLibrary({
   onOpenUpload: () => void;
   projects?: Project[];
   deletingProjectId?: string | null;
+  renamingProjectId?: string | null;
   onDeleteProject?: (projectId: string) => Promise<void>;
+  onRenameProject?: (projectId: string, title: string) => Promise<Project | void>;
   authButtonLabel?: string;
   onAuthButtonClick?: () => void;
 }) {
@@ -252,6 +256,35 @@ export default function DesktopProjectLibrary({
 
     await onDeleteProject(selectedProject.id);
     setSelectedProject(null);
+  };
+
+  const handleRenameSelectedProject = async (title: string) => {
+    if (!selectedProject?.id || !selectedProject.canDelete || !onRenameProject) {
+      return;
+    }
+
+    const updatedProject = await onRenameProject(selectedProject.id, title);
+    const nextTitle = updatedProject?.title ?? title.trim();
+    setSelectedProject((current) => (current ? { ...current, title: nextTitle } : current));
+  };
+
+  const closeSelectedProject = () => {
+    setSelectedProject(null);
+  };
+
+  const handleNavigateHomeFromViewer = () => {
+    closeSelectedProject();
+    onNavigateHome();
+  };
+
+  const handleNavigateGetStartedFromViewer = () => {
+    closeSelectedProject();
+    onNavigateGetStarted();
+  };
+
+  const handleNavigateLibraryFromViewer = () => {
+    closeSelectedProject();
+    onNavigateLibrary();
   };
 
   return (
@@ -368,13 +401,13 @@ export default function DesktopProjectLibrary({
           buildingType={selectedProject.buildingType}
           canDeleteProject={selectedProject.canDelete}
           isDeletingProject={deletingProjectId === selectedProject.id}
+          isRenamingProject={renamingProjectId === selectedProject.id}
           onDeleteProject={selectedProject.canDelete ? handleDeleteSelectedProject : undefined}
-          onClose={() => {
-            setSelectedProject(null);
-          }}
-          onNavigateHome={onNavigateHome}
-          onNavigateGetStarted={onNavigateGetStarted}
-          onNavigateLibrary={onNavigateLibrary}
+          onRenameProject={selectedProject.canDelete ? handleRenameSelectedProject : undefined}
+          onClose={closeSelectedProject}
+          onNavigateHome={handleNavigateHomeFromViewer}
+          onNavigateGetStarted={handleNavigateGetStartedFromViewer}
+          onNavigateLibrary={handleNavigateLibraryFromViewer}
           rawPointCloudUrl={selectedProject.urls?.raw}
           instancedPointCloudUrl={selectedProject.urls?.instanced}
           bimModelUrl={selectedProject.urls?.bim}

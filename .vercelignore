@@ -1,6 +1,8 @@
 *
 
+!src
 !src/**
+!utils
 !utils/**
 !index.html
 !package.json
@@ -8,3 +10,5 @@
 !vite.config.ts
 !postcss.config.mjs
 !vercel.json
+!public
+!public/**

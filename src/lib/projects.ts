@@ -262,3 +262,24 @@ export const deleteProject = async (projectId: string, userId: string) => {
     throw deleteError;
   }
 };
+
+export const renameProject = async (projectId: string, userId: string, title: string) => {
+  const nextTitle = title.trim();
+  if (!nextTitle) {
+    throw new Error('Project name cannot be empty.');
+  }
+
+  const { data, error } = await supabase
+    .from('projects')
+    .update({ title: nextTitle })
+    .eq('id', projectId)
+    .eq('user_id', userId)
+    .select('*')
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapProjectRow(data as ProjectRow);
+};

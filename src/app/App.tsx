@@ -14,6 +14,7 @@ import {
   listProjects,
   type ProcessPointCloudResult,
   type Project,
+  renameProject,
 } from '../lib/projects';
 import { absolutizeUrl, toApiUrl } from '../lib/api';
 import { supabase, supabaseConfigError } from '../lib/supabase';
@@ -60,6 +61,7 @@ export default function App() {
   const [formData, setFormData] = useState<ProjectFormData>(emptyFormData);
   const [processingStage, setProcessingStage] = useState<'uploading' | 'processing' | 'complete'>('uploading');
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null);
   const uploadAbortController = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -276,6 +278,28 @@ export default function App() {
     }
   };
 
+  const handleRenameProject = async (projectId: string, title: string) => {
+    if (!user) {
+      alert('Please log in before renaming a project.');
+      return;
+    }
+
+    setRenamingProjectId(projectId);
+    try {
+      const updatedProject = await renameProject(projectId, user.id, title);
+      setProjects((prev) =>
+        prev.map((project) => (project.id === projectId ? updatedProject : project)),
+      );
+      return updatedProject;
+    } catch (error) {
+      console.error('Failed to rename project:', error);
+      alert(`Failed to rename project: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw error;
+    } finally {
+      setRenamingProjectId((current) => (current === projectId ? null : current));
+    }
+  };
+
   if (!authReady) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#f5f5f5]">
@@ -317,7 +341,9 @@ export default function App() {
           onOpenUpload={handleOpenUpload}
           projects={projects}
           deletingProjectId={deletingProjectId}
+          renamingProjectId={renamingProjectId}
           onDeleteProject={handleDeleteProject}
+          onRenameProject={handleRenameProject}
           authButtonLabel={authButtonLabel}
           onAuthButtonClick={handleSignOut}
         />
