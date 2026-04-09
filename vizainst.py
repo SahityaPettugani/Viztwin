@@ -1,70 +1,20 @@
-import numpy as np
-import open3d as o3d
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-import pyransac3d as pyrsc
-from sklearn.neighbors import NearestNeighbors # Added for smoothing
-
-import torch
-torch.backends.cudnn.benchmark = True
-from torch.nn import CrossEntropyLoss
-from torch.optim import Adam
-from torch.utils.data import DataLoader
-
+import argparse
+import json
 import os
-import sys
 from pathlib import Path
 
-
-def configure_scan2bim_path():
-    script_dir = Path(__file__).resolve().parent
-    candidates = []
-
-    env_dir = os.environ.get("SCAN2BIM_DIR")
-    if env_dir:
-        candidates.append(Path(env_dir))
-
-    backend_dir = script_dir / "BACKEND"
-    if backend_dir.exists():
-        candidates.append(backend_dir)
-        candidates.append(backend_dir / "scan2bim")
-        candidates.append(backend_dir / "src")
-
-        # Include nested folders under BACKEND as potential scan2bim roots.
-        for child in sorted(backend_dir.iterdir()):
-            if child.is_dir():
-                candidates.append(child)
-
-    candidates.extend([
-        script_dir,
-        script_dir.parent / "scan2bim",
-        Path(r"C:\Users\iamsa\Downloads\scan2bim"),
-    ])
-
-    for candidate in candidates:
-        if (candidate / "model").is_dir() and (candidate / "dataloaders").is_dir():
-            candidate_str = str(candidate)
-            if candidate_str not in sys.path:
-                sys.path.insert(0, candidate_str)
-            return candidate
-
-    raise ModuleNotFoundError(
-        "Could not locate scan2bim source directory containing 'model' and "
-        f"'dataloaders'. Checked: {', '.join(str(path) for path in candidates)}"
-    )
-
-
-SCAN2BIM_DIR = configure_scan2bim_path()
-
-from model.segcloud import SegCloud
-from model.bimnet import BIMNet
-from dataloaders.PCSdataset import PCSDataset
-from dataloaders.S3DISdataset import S3DISDataset
-
+import matplotlib.pyplot as plt
+import numpy as np
+import open3d as o3d
+import pyransac3d as pyrsc
+import torch
 from sklearn.cluster import DBSCAN
-import json
-from matplotlib.colors import to_rgb
-import argparse
+from sklearn.neighbors import NearestNeighbors
+from tqdm import tqdm
+
+from model.bimnet import BIMNet
+
+torch.backends.cudnn.benchmark = True
 
 ID_TO_NAME = {
     0: "ceiling",
@@ -76,16 +26,18 @@ ID_TO_NAME = {
     6: "door",
 }
 
+
 def load_point_cloud(file_path):
     print(f"Loading point cloud from: {file_path}")
-    
-    if file_path.suffix in ['.ply', '.pcd']:
+
+    if file_path.suffix in [".ply", ".pcd"]:
         pcd = o3d.io.read_point_cloud(str(file_path))
     else:
         raise ValueError(f"Unsupported file format: {file_path.suffix}")
-    
+
     print(f"Loaded {len(pcd.points)} points")
     return pcd
+
 
 def separate_by_label(pcd, point_labels):
     points = np.asarray(pcd.points)
@@ -93,7 +45,7 @@ def separate_by_label(pcd, point_labels):
 
     separated = {}
     for class_id, class_name in ID_TO_NAME.items():
-        mask = (point_labels == class_id)
+        mask = point_labels == class_id
         if not np.any(mask):
             continue
 
@@ -123,6 +75,7 @@ def smooth_labels_knn(pcd, labels, k=5, protected_classes=None):
     new_labels = labels.copy()
 
     from scipy.stats import mode
+
     try:
         vote_result = mode(neighbor_labels, axis=1, keepdims=False)
         voted = np.asarray(vote_result[0]).reshape(-1)
@@ -137,6 +90,7 @@ def smooth_labels_knn(pcd, labels, k=5, protected_classes=None):
 
     return new_labels
 
+
 def instantiate_with_dbscan(pcd, class_name, eps=0.1, min_points=100):
     if len(pcd.points) == 0:
         return []
@@ -144,16 +98,16 @@ def instantiate_with_dbscan(pcd, class_name, eps=0.1, min_points=100):
     pcd = pcd.select_by_index(ind)
     points = np.asarray(pcd.points)
     colors = np.asarray(pcd.colors)
-    
+
     print(f"\nClustering {class_name} with DBSCAN...")
     clustering = DBSCAN(eps=eps, min_samples=min_points, n_jobs=-1).fit(points)
     labels = clustering.labels_
-    
+
     unique_labels = set(labels)
     n_clusters = len(unique_labels) - (1 if -1 in labels else 0)
-    
+
     print(f"  Found {n_clusters} instances")
-    
+
     instances = []
     for label_id in unique_labels:
         if label_id == -1:
@@ -180,43 +134,41 @@ def is_valid_geometry(pcd, class_name):
 def filter_small_instances(instances_dict, min_points_thresholds):
     cleaned_dict = {}
     print("\n--- CLEANING NOISE ---")
-    
+
     for class_name, instances in instances_dict.items():
         thresh = min_points_thresholds.get(class_name, 500)
-        
+
         valid_instances = []
-        for i, pcd in enumerate(instances):
+        for pcd in instances:
             n_points = len(pcd.points)
             if n_points >= thresh:
                 valid_instances.append(pcd)
-        
+
         cleaned_dict[class_name] = valid_instances
         removed = len(instances) - len(valid_instances)
         if removed > 0:
             print(f"  {class_name}: Removed {removed} small instances (<{thresh} pts)")
-            
+
     return cleaned_dict
+
 
 def save_instances(instances_dict, output_dir):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     for class_name, instances in instances_dict.items():
         class_dir = output_path / class_name
         class_dir.mkdir(exist_ok=True)
-        
+
         for i, instance in enumerate(instances):
             filename = class_dir / f"{class_name}_instance_{i:03d}.ply"
             o3d.io.write_point_cloud(str(filename), instance)
-        
-    summary = {
-        class_name: len(instances) 
-        for class_name, instances in instances_dict.items()
-    }
-    
-    with open(output_path / "instantiation_summary.json", 'w') as f:
+
+    summary = {class_name: len(instances) for class_name, instances in instances_dict.items()}
+
+    with open(output_path / "instantiation_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
-    
+
     print(f"\nSummary saved to {output_path / 'instantiation_summary.json'}")
 
     combined_pc = o3d.geometry.PointCloud()
@@ -232,20 +184,29 @@ def generate_distinct_colors(n_colors):
     try:
         cmap = plt.colormaps['tab20']
     except (AttributeError, KeyError):
-        cmap = plt.cm.get_cmap('tab20')
-    
+        cmap = plt.cm.get_cmap("tab20")
+
     colors = []
     for i in range(n_colors):
         rgba = cmap(i / max(n_colors, 1))
         colors.append(rgba[:3])
     return colors
 
+
+def is_visualization_disabled():
+    return os.environ.get("DISABLE_OPEN3D_VISUALIZER") == "1"
+
+
 def visualize_instances(instances_dict, show_by_class=True):
+    if is_visualization_disabled():
+        print("Skipping Open3D visualization because DISABLE_OPEN3D_VISUALIZER=1")
+        return
+
     if show_by_class:
         for class_name, instances in instances_dict.items():
             if len(instances) == 0:
                 continue
-            
+
             print(f"\nVisualizing {class_name} instances ({len(instances)} instances)...")
             instance_colors = generate_distinct_colors(len(instances))
             colored_instances = []
@@ -273,7 +234,7 @@ def visualize_instances(instances_dict, show_by_class=True):
                 instance_color = np.tile(instance_colors[i], (len(instance.points), 1))
                 colored_pcd.colors = o3d.utility.Vector3dVector(instance_color)
                 all_colored_instances.append(colored_pcd)
-        
+
         if all_colored_instances:
             o3d.visualization.draw_geometries(
                 all_colored_instances,
@@ -283,10 +244,14 @@ def visualize_instances(instances_dict, show_by_class=True):
             )
 
 def visualize_summary(instances_dict, separated_classes, original_pcd):
+    if is_visualization_disabled():
+        print("Skipping Open3D visualization because DISABLE_OPEN3D_VISUALIZER=1")
+        return
+
     print("\n" + "=" * 60)
     print("VISUALIZATION MODE")
     print("=" * 60)
-    
+
     if separated_classes:
         o3d.visualization.draw_geometries(
             list(separated_classes.values()),
@@ -300,8 +265,9 @@ def visualize_summary(instances_dict, separated_classes, original_pcd):
 
     print("\n" + "=" * 60)
     response = input("Would you like to see all instances from all classes separately? (y/n): ")
-    if response.lower() == 'y':
+    if response.lower() == "y":
         visualize_instances(instances_dict, show_by_class=True)
+
 
 def finetune_model(checkpoint_path, device, num_old_classes, num_new_classes):
     state_old = torch.load(checkpoint_path, map_location=device)
@@ -315,7 +281,7 @@ def finetune_model(checkpoint_path, device, num_old_classes, num_new_classes):
             transferred.append(k)
         else:
             skipped.append(k)
-    
+
     if skipped:
         print("Skipped parameters:")
         for k in skipped:
@@ -326,6 +292,7 @@ def finetune_model(checkpoint_path, device, num_old_classes, num_new_classes):
     model_new.train()
 
     return model_new
+
 
 def build_models(checkpoint_paths, device, num_classes=7):
     models = []
@@ -339,7 +306,7 @@ def build_models(checkpoint_paths, device, num_classes=7):
 def voxelize_points(points, cube_edge):
     points_centered = points - points.mean(axis=0)
     points_centered[:, 2] -= points_centered[:, 2].min()
-    
+
     ranges = points_centered.max(axis=0) - points_centered.min(axis=0)
     max_dim = ranges.max() + 1e-6
     scale_factor = 1.8 / max_dim
@@ -358,11 +325,13 @@ def voxelize_points(points, cube_edge):
 
     return vox, points_grid
 
+
 def color_label(labels, num_classes=7):
     cmap = plt.get_cmap("tab20", num_classes)
     flat = labels.flatten()
     colors = cmap(flat % num_classes)[:, :3]
     return colors.reshape((*labels.shape, 3))
+
 
 def run_bimnet_inference(pcd, models, cube_edge=96, num_classes=7, device="cuda"):
     points = np.asarray(pcd.points)
@@ -383,7 +352,7 @@ def run_bimnet_inference(pcd, models, cube_edge=96, num_classes=7, device="cuda"
     point_labels = preds[points_grid[:, 0], points_grid[:, 1], points_grid[:, 2]]
 
     pcd.colors = o3d.utility.Vector3dVector(point_colors)
-    
+
     return pcd, preds, points_grid, point_labels
 
 def instantiate_planar_iterative(pcd, class_name, dist_thresh=0.12, min_points=500, max_instances=12):

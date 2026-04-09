@@ -15,6 +15,7 @@ import {
   type ProcessPointCloudResult,
   type Project,
 } from '../lib/projects';
+import { absolutizeUrl, toApiUrl } from '../lib/api';
 import { supabase, supabaseConfigError } from '../lib/supabase';
 
 interface ProjectFormData {
@@ -31,6 +32,19 @@ const emptyFormData: ProjectFormData = {
   buildingType: '',
 };
 
+const normalizeProcessResultUrls = (processResult: ProcessPointCloudResult): ProcessPointCloudResult => ({
+  ...processResult,
+  semanticUrl: absolutizeUrl(processResult.semanticUrl),
+  instancedUrl: absolutizeUrl(processResult.instancedUrl),
+  bimIfcUrl: absolutizeUrl(processResult.bimIfcUrl),
+  bimObjUrl: absolutizeUrl(processResult.bimObjUrl),
+  bimPropsUrl: absolutizeUrl(processResult.bimPropsUrl),
+  generatedFiles: processResult.generatedFiles?.map((file) => ({
+    ...file,
+    url: absolutizeUrl(file.url) || file.url,
+  })),
+});
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -46,6 +60,7 @@ export default function App() {
   const [uploadError, setUploadError] = useState('');
   const [formData, setFormData] = useState<ProjectFormData>(emptyFormData);
   const [processingStage, setProcessingStage] = useState<'uploading' | 'processing' | 'complete'>('uploading');
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const uploadAbortController = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -156,7 +171,7 @@ export default function App() {
       const processFormData = new FormData();
       processFormData.append('file', uploadedFile);
 
-      const processResponse = await fetch('/api/process-pointcloud', {
+      const processResponse = await fetch(toApiUrl('/api/process-pointcloud'), {
         method: 'POST',
         body: processFormData,
         signal: uploadAbortController.current.signal,
@@ -164,7 +179,7 @@ export default function App() {
 
       let processResult: ProcessPointCloudResult = { success: false };
       if (processResponse.ok) {
-        processResult = (await processResponse.json()) as ProcessPointCloudResult;
+        processResult = normalizeProcessResultUrls((await processResponse.json()) as ProcessPointCloudResult);
       } else {
         const errorData = await processResponse.json().catch(() => ({}));
         throw new Error(errorData.error || 'Point cloud processing failed.');
@@ -243,22 +258,22 @@ export default function App() {
     resetUploadState();
   };
 
-  const handleDeleteProject = async (project: Project) => {
-    const confirmed = window.confirm(`Delete "${project.title}"? This will remove the project and its stored files.`);
-    if (!confirmed) {
+  const handleDeleteProject = async (projectId: string) => {
+    if (!user) {
+      alert('Please log in before deleting a project.');
       return;
     }
 
-    setDeletingProjectId(project.id);
+    setDeletingProjectId(projectId);
     try {
-      await deleteProject(project);
-      setProjects((prev) => prev.filter((item) => item.id !== project.id));
+      await deleteProject(projectId, user.id);
+      setProjects((prev) => prev.filter((project) => project.id !== projectId));
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
       console.error('Failed to delete project:', error);
-      alert(`Failed to delete project: ${message}`);
+      alert(`Failed to delete project: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw error;
     } finally {
-      setDeletingProjectId(null);
+      setDeletingProjectId((current) => (current === projectId ? null : current));
     }
   };
 
