@@ -7,7 +7,10 @@
     "build": "vite build",
     "dev": "vite",
     "server": "node server.js",
-    "dev-all": "concurrently \"npm run server\" \"npm run dev\""
+    "dev-all": "concurrently \"npm run server\" \"npm run dev\"",
+    "test:integration": "node tests/integration/process-pointcloud.integration.mjs",
+    "test:viz-inst:jest": "npm --prefix BACKEND/scan2bim run test:viz-inst",
+    "test:stage-pipeline:jest": "npm --prefix BACKEND/scan2bim run test:stage-pipeline"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
