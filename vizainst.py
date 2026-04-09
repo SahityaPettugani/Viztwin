@@ -9,6 +9,7 @@ import numpy as np
 import open3d as o3d
 import pyransac3d as pyrsc
 import torch
+from scipy.spatial import ConvexHull, QhullError
 from sklearn.cluster import DBSCAN
 from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
@@ -28,6 +29,220 @@ ID_TO_NAME = {
 }
 
 
+def _rotation_matrix_from_vectors(src, dst):
+    src = np.asarray(src, dtype=float)
+    dst = np.asarray(dst, dtype=float)
+    src /= np.linalg.norm(src) + 1e-12
+    dst /= np.linalg.norm(dst) + 1e-12
+    v = np.cross(src, dst)
+    c = float(np.dot(src, dst))
+    s = float(np.linalg.norm(v))
+
+    if s < 1e-10:
+        if c > 0.0:
+            return np.eye(3, dtype=float)
+        # 180-degree turn around any axis perpendicular to src.
+        axis = np.array([1.0, 0.0, 0.0], dtype=float)
+        if abs(src[0]) > 0.9:
+            axis = np.array([0.0, 1.0, 0.0], dtype=float)
+        axis -= src * np.dot(src, axis)
+        axis /= np.linalg.norm(axis) + 1e-12
+        x, y, z = axis
+        return np.array([
+            [2 * x * x - 1, 2 * x * y, 2 * x * z],
+            [2 * x * y, 2 * y * y - 1, 2 * y * z],
+            [2 * x * z, 2 * y * z, 2 * z * z - 1],
+        ], dtype=float)
+
+    vx = np.array(
+        [
+            [0.0, -v[2], v[1]],
+            [v[2], 0.0, -v[0]],
+            [-v[1], v[0], 0.0],
+        ],
+        dtype=float,
+    )
+    return np.eye(3, dtype=float) + vx + (vx @ vx) * ((1.0 - c) / (s * s + 1e-12))
+
+
+def _axis_name(axis_index):
+    return ("x", "y", "z")[axis_index]
+
+
+def _extreme_slab_count(values, lower=True, slab_fraction=0.08):
+    if values.size == 0:
+        return 0
+
+    lo = float(values.min())
+    hi = float(values.max())
+    span = hi - lo
+    if span <= 1e-9:
+        return int(values.size)
+
+    slab = max(span * slab_fraction, 1e-6)
+    if lower:
+        return int(np.count_nonzero(values <= lo + slab))
+    return int(np.count_nonzero(values >= hi - slab))
+
+
+def _infer_up_axis(points):
+    if len(points) == 0:
+        return 2, False
+
+    ranges = points.max(axis=0) - points.min(axis=0)
+    axis_scores = []
+    for axis in range(3):
+        low_count = _extreme_slab_count(points[:, axis], lower=True)
+        high_count = _extreme_slab_count(points[:, axis], lower=False)
+        slab_support = low_count + high_count
+        axis_scores.append((float(ranges[axis]), -slab_support, axis, low_count, high_count))
+
+    axis_scores.sort()
+    _, _, up_axis, low_count, high_count = axis_scores[0]
+    flip_vertical = high_count > max(low_count * 1.15, low_count + 500)
+    return up_axis, flip_vertical
+
+
+def _orient_point_cloud_by_axis_heuristic(pcd):
+    if len(pcd.points) == 0:
+        return pcd
+
+    points = np.asarray(pcd.points).copy()
+    colors = np.asarray(pcd.colors).copy() if pcd.has_colors() else None
+    normals = np.asarray(pcd.normals).copy() if pcd.has_normals() else None
+
+    inferred_up_axis, flip_vertical = _infer_up_axis(points)
+    print(
+        "Auto orientation fallback: "
+        f"detected up axis={_axis_name(inferred_up_axis).upper()}, "
+        f"flip_vertical={'yes' if flip_vertical else 'no'}"
+    )
+
+    if inferred_up_axis != 2:
+        perm = [axis for axis in range(3) if axis != inferred_up_axis] + [inferred_up_axis]
+        points = points[:, perm]
+        if normals is not None:
+            normals = normals[:, perm]
+
+    if flip_vertical:
+        points[:, 2] *= -1.0
+        if normals is not None:
+            normals[:, 2] *= -1.0
+
+    points[:, 2] -= float(points[:, 2].min())
+
+    oriented = o3d.geometry.PointCloud()
+    oriented.points = o3d.utility.Vector3dVector(points)
+    if colors is not None:
+        oriented.colors = o3d.utility.Vector3dVector(colors)
+    if normals is not None:
+        oriented.normals = o3d.utility.Vector3dVector(normals)
+    return oriented
+
+
+def orient_point_cloud_floor_down(
+    pcd,
+    distance_threshold=0.08,
+    ransac_n=3,
+    num_iterations=1200,
+    max_planes=6,
+    min_inlier_ratio=0.08,
+):
+    if len(pcd.points) < 200:
+        oriented = _orient_point_cloud_by_axis_heuristic(pcd)
+        print("Auto orientation: used axis heuristic for small point cloud.")
+        return oriented
+
+    points = np.asarray(pcd.points)
+    total_points = len(points)
+    work_pcd = o3d.geometry.PointCloud(pcd)
+    best_candidate = None
+
+    for _ in range(max_planes):
+        if len(work_pcd.points) < max(200, int(total_points * min_inlier_ratio)):
+            break
+        try:
+            plane_model, inliers = work_pcd.segment_plane(
+                distance_threshold=distance_threshold,
+                ransac_n=ransac_n,
+                num_iterations=num_iterations,
+            )
+        except RuntimeError:
+            break
+
+        if len(inliers) < max(200, int(total_points * min_inlier_ratio)):
+            break
+
+        a, b, c, d = plane_model
+        normal = np.array([a, b, c], dtype=float)
+        normal /= np.linalg.norm(normal) + 1e-12
+        horizontal_score = abs(float(normal[2]))
+        inlier_points = np.asarray(work_pcd.points)[inliers]
+        if best_candidate is None or (
+            horizontal_score > best_candidate["horizontal_score"] + 1e-6
+            or (
+                abs(horizontal_score - best_candidate["horizontal_score"]) <= 1e-6
+                and len(inliers) > best_candidate["inlier_count"]
+            )
+        ):
+            best_candidate = {
+                "normal": normal,
+                "inlier_count": len(inliers),
+                "horizontal_score": horizontal_score,
+                "plane_center": inlier_points.mean(axis=0),
+            }
+
+        work_pcd = work_pcd.select_by_index(inliers, invert=True)
+
+    if best_candidate is None or best_candidate["horizontal_score"] < 0.75:
+        print("Auto orientation: no reliable horizontal plane found, using axis heuristic.")
+        return _orient_point_cloud_by_axis_heuristic(pcd)
+
+    plane_normal = best_candidate["normal"]
+    if plane_normal[2] < 0.0:
+        plane_normal = -plane_normal
+
+    rotation = _rotation_matrix_from_vectors(plane_normal, np.array([0.0, 0.0, 1.0], dtype=float))
+    rotated_points = points @ rotation.T
+    rotated_plane_center = np.asarray(best_candidate["plane_center"], dtype=float) @ rotation.T
+    plane_mean_z = float(rotated_plane_center[2])
+    below_count = int(np.count_nonzero(rotated_points[:, 2] < plane_mean_z - distance_threshold))
+    above_count = int(np.count_nonzero(rotated_points[:, 2] > plane_mean_z + distance_threshold))
+
+    # A floor plane should have most of the scene above it. If the opposite is
+    # true, the detected dominant horizontal plane is acting like a ceiling.
+    if above_count < below_count:
+        flip_rotation = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ],
+            dtype=float,
+        )
+        rotation = flip_rotation @ rotation
+        rotated_points = points @ rotation.T
+        plane_normal = plane_normal @ flip_rotation.T
+        print("Auto orientation: flipped scene so most geometry sits above the detected floor plane.")
+
+    rotated_points[:, 2] -= rotated_points[:, 2].min()
+
+    oriented = o3d.geometry.PointCloud()
+    oriented.points = o3d.utility.Vector3dVector(rotated_points)
+    if pcd.has_colors():
+        oriented.colors = o3d.utility.Vector3dVector(np.asarray(pcd.colors))
+    if pcd.has_normals():
+        normals = np.asarray(pcd.normals) @ rotation.T
+        oriented.normals = o3d.utility.Vector3dVector(normals)
+
+    print(
+        "Auto orientation: aligned dominant horizontal plane to the floor "
+        f"(score={best_candidate['horizontal_score']:.3f}, inliers={best_candidate['inlier_count']}, "
+        f"above={above_count}, below={below_count})."
+    )
+    return oriented
+
+
 def load_point_cloud(file_path):
     print(f"Loading point cloud from: {file_path}")
 
@@ -37,6 +252,7 @@ def load_point_cloud(file_path):
         raise ValueError(f"Unsupported file format: {file_path.suffix}")
 
     print(f"Loaded {len(pcd.points)} points")
+    pcd = orient_point_cloud_floor_down(pcd)
     return pcd
 
 
@@ -376,34 +592,258 @@ def _quantile_range(values, lo=0.02, hi=0.98):
     return float(np.quantile(values, lo)), float(np.quantile(values, hi))
 
 
-def _fit_linear_geometry(xy_pts, snap_to_ortho=False):
-    from sklearn.decomposition import PCA
-
-    pca = PCA(n_components=2)
-    pca.fit(xy_pts)
-
-    direction = pca.components_[0]
+def _fit_principal_axes(xy_pts, snap_to_ortho=False):
+    centered = xy_pts - np.median(xy_pts, axis=0)
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    direction = vh[0]
     direction = direction / (np.linalg.norm(direction) + 1e-12)
-
     if snap_to_ortho:
         angle = math.atan2(direction[1], direction[0])
         snapped_angle = round(angle / (math.pi / 2.0)) * (math.pi / 2.0)
         if abs(angle - snapped_angle) <= math.radians(12.0):
             direction = np.array([math.cos(snapped_angle), math.sin(snapped_angle)], dtype=float)
-
     normal2d = np.array([-direction[1], direction[0]], dtype=float)
-    center = xy_pts.mean(axis=0)
+    origin = np.median(xy_pts, axis=0)
+    return origin, direction, normal2d
 
-    proj_main = (xy_pts - center) @ direction
-    proj_side = (xy_pts - center) @ normal2d
-    main_min, main_max = _quantile_range(proj_main)
-    side_min, side_max = _quantile_range(proj_side, 0.05, 0.95)
 
-    start_pt = center + direction * main_min
-    end_pt = center + direction * main_max
-    thickness = float(max(0.05, side_max - side_min))
+def _minimum_area_rectangle(xy_pts, snap_to_ortho=False):
+    pts = np.unique(np.asarray(xy_pts, dtype=float), axis=0)
+    if len(pts) < 3:
+        return None
 
-    return start_pt, end_pt, thickness
+    try:
+        hull = ConvexHull(pts)
+        hull_pts = pts[hull.vertices]
+    except QhullError:
+        return None
+
+    if len(hull_pts) < 3:
+        return None
+
+    hull_loop = np.vstack([hull_pts, hull_pts[0]])
+    edges = np.diff(hull_loop, axis=0)
+    edge_angles = np.mod(np.arctan2(edges[:, 1], edges[:, 0]), math.pi / 2.0)
+    edge_angles = np.unique(np.round(edge_angles, decimals=8))
+
+    best = None
+    for angle in edge_angles:
+        c = math.cos(angle)
+        s = math.sin(angle)
+        rot = np.array([[c, s], [-s, c]], dtype=float)
+        inv_rot = np.array([[c, -s], [s, c]], dtype=float)
+
+        rotated = hull_pts @ rot.T
+        min_x = float(rotated[:, 0].min())
+        max_x = float(rotated[:, 0].max())
+        min_y = float(rotated[:, 1].min())
+        max_y = float(rotated[:, 1].max())
+        area = (max_x - min_x) * (max_y - min_y)
+
+        if best is None or area < best["area"]:
+            corners_rot = np.array(
+                [
+                    [min_x, min_y],
+                    [max_x, min_y],
+                    [max_x, max_y],
+                    [min_x, max_y],
+                ],
+                dtype=float,
+            )
+            corners = corners_rot @ inv_rot.T
+            best = {
+                "angle": angle,
+                "area": float(area),
+                "min_x": min_x,
+                "max_x": max_x,
+                "min_y": min_y,
+                "max_y": max_y,
+                "corners": corners,
+            }
+
+    if best is None:
+        return None
+
+    angle = float(best["angle"])
+    if snap_to_ortho:
+        snapped = round(angle / (math.pi / 2.0)) * (math.pi / 2.0)
+        if abs(angle - snapped) <= math.radians(12.0):
+            angle = snapped
+            c = math.cos(angle)
+            s = math.sin(angle)
+            rot = np.array([[c, s], [-s, c]], dtype=float)
+            inv_rot = np.array([[c, -s], [s, c]], dtype=float)
+            rotated = hull_pts @ rot.T
+            min_x = float(rotated[:, 0].min())
+            max_x = float(rotated[:, 0].max())
+            min_y = float(rotated[:, 1].min())
+            max_y = float(rotated[:, 1].max())
+            corners_rot = np.array(
+                [
+                    [min_x, min_y],
+                    [max_x, min_y],
+                    [max_x, max_y],
+                    [min_x, max_y],
+                ],
+                dtype=float,
+            )
+            best = {
+                "angle": angle,
+                "area": float((max_x - min_x) * (max_y - min_y)),
+                "min_x": min_x,
+                "max_x": max_x,
+                "min_y": min_y,
+                "max_y": max_y,
+                "corners": corners_rot @ inv_rot.T,
+            }
+
+    return best
+
+
+def _fit_oriented_footprint(
+    xy_pts,
+    snap_to_ortho=False,
+    main_lo=0.02,
+    main_hi=0.98,
+    side_lo=0.05,
+    side_hi=0.95,
+):
+    rect = _minimum_area_rectangle(xy_pts, snap_to_ortho=snap_to_ortho)
+    if rect is not None:
+        angle = float(rect["angle"])
+        direction = np.array([math.cos(angle), math.sin(angle)], dtype=float)
+        normal2d = np.array([-direction[1], direction[0]], dtype=float)
+        origin = rect["corners"].mean(axis=0)
+        main_min = float(rect["min_x"] - np.mean([rect["min_x"], rect["max_x"]]))
+        main_max = float(rect["max_x"] - np.mean([rect["min_x"], rect["max_x"]]))
+        side_min = float(rect["min_y"] - np.mean([rect["min_y"], rect["max_y"]]))
+        side_max = float(rect["max_y"] - np.mean([rect["min_y"], rect["max_y"]]))
+        length = float(max(0.0, rect["max_x"] - rect["min_x"]))
+        width = float(max(0.0, rect["max_y"] - rect["min_y"]))
+        corners = [np.asarray(pt, dtype=float) for pt in rect["corners"]]
+        return {
+            "origin": origin,
+            "direction": direction,
+            "normal": normal2d,
+            "main_min": main_min,
+            "main_max": main_max,
+            "side_min": side_min,
+            "side_max": side_max,
+            "length": length,
+            "width": width,
+            "corners": corners,
+        }
+
+    origin, direction, normal2d = _fit_principal_axes(xy_pts, snap_to_ortho=snap_to_ortho)
+    proj_main = (xy_pts - origin) @ direction
+    proj_side = (xy_pts - origin) @ normal2d
+    main_min, main_max = _quantile_range(proj_main, main_lo, main_hi)
+    side_min, side_max = _quantile_range(proj_side, side_lo, side_hi)
+
+    c0 = origin + direction * main_min + normal2d * side_min
+    c1 = origin + direction * main_max + normal2d * side_min
+    c2 = origin + direction * main_max + normal2d * side_max
+    c3 = origin + direction * main_min + normal2d * side_max
+    return {
+        "origin": origin,
+        "direction": direction,
+        "normal": normal2d,
+        "main_min": main_min,
+        "main_max": main_max,
+        "side_min": side_min,
+        "side_max": side_max,
+        "length": float(max(0.0, main_max - main_min)),
+        "width": float(max(0.0, side_max - side_min)),
+        "corners": [c0, c1, c2, c3],
+    }
+
+
+def _fit_linear_geometry(xy_pts, snap_to_ortho=False):
+    footprint = _fit_oriented_footprint(xy_pts, snap_to_ortho=snap_to_ortho)
+    side_center = 0.5 * (footprint["side_min"] + footprint["side_max"])
+    start_pt = (
+        footprint["origin"]
+        + footprint["direction"] * footprint["main_min"]
+        + footprint["normal"] * side_center
+    )
+    end_pt = (
+        footprint["origin"]
+        + footprint["direction"] * footprint["main_max"]
+        + footprint["normal"] * side_center
+    )
+    thickness = float(max(0.05, footprint["width"]))
+    polygon = [[float(pt[0]), float(pt[1])] for pt in footprint["corners"]]
+    return start_pt, end_pt, thickness, polygon, footprint
+
+
+def _class_dims_from_points(pts):
+    x_min, x_max = _quantile_range(pts[:, 0], 0.05, 0.95)
+    y_min, y_max = _quantile_range(pts[:, 1], 0.05, 0.95)
+    z_min, z_max = _quantile_range(pts[:, 2], 0.05, 0.95)
+    x_span = float(max(0.0, x_max - x_min))
+    y_span = float(max(0.0, y_max - y_min))
+    z_span = float(max(0.0, z_max - z_min))
+    xy_major = float(max(x_span, y_span))
+    xy_minor = float(min(x_span, y_span))
+    return {
+        "x_min": float(x_min),
+        "x_max": float(x_max),
+        "y_min": float(y_min),
+        "y_max": float(y_max),
+        "z_min": float(z_min),
+        "z_max": float(z_max),
+        "x_span": x_span,
+        "y_span": y_span,
+        "z_span": z_span,
+        "xy_major": xy_major,
+        "xy_minor": xy_minor,
+    }
+
+
+def _is_plausible_nonwall_element(class_name, dims, footprint, point_count):
+    length = float(max(footprint["length"], footprint["width"]))
+    width = float(min(footprint["length"], footprint["width"]))
+    height = float(dims["z_span"])
+    z_min = float(dims["z_min"])
+    z_mid = 0.5 * (float(dims["z_min"]) + float(dims["z_max"]))
+
+    if class_name == "beam":
+        return (
+            point_count >= 180
+            and length >= 0.9
+            and width <= 0.8
+            and height <= 0.9
+            and length >= max(1.8 * width, 1.8 * height)
+            and z_mid >= 1.8
+        )
+
+    if class_name == "column":
+        return (
+            point_count >= 180
+            and height >= 1.8
+            and dims["xy_major"] <= 1.0
+            and height >= 2.5 * max(dims["xy_major"], 0.2)
+        )
+
+    if class_name == "door":
+        return (
+            point_count >= 120
+            and 1.8 <= height <= 2.5
+            and 0.6 <= length <= 1.8
+            and width <= 0.35
+            and z_min <= 0.25
+        )
+
+    if class_name == "window":
+        return (
+            point_count >= 100
+            and 0.4 <= height <= 2.2
+            and 0.25 <= length <= 3.5
+            and width <= 0.5
+            and z_min >= 0.3
+        )
+
+    return True
 
 
 def _to_xy_from_geometry(geometry, start=True):
@@ -659,6 +1099,7 @@ def extract_bim_parameters(instances_dict):
     bim_data = []
     walls = []
     openings = []
+    rejected_counts = {"beam": 0, "column": 0, "window": 0, "door": 0}
 
     wall_pts_all = []
     for wall_pcd in instances_dict.get("wall", []):
@@ -678,43 +1119,91 @@ def extract_bim_parameters(instances_dict):
             pts = np.asarray(pcd.points)
             if len(pts) < 50:
                 continue
-            x_min, x_max = _quantile_range(pts[:, 0])
-            y_min, y_max = _quantile_range(pts[:, 1])
-            z_min, z_max = _quantile_range(pts[:, 2])
-            height = z_max - z_min
+            dims = _class_dims_from_points(pts)
+            z_min = float(dims["z_min"])
+            z_max = float(dims["z_max"])
+            height = float(dims["z_span"])
             if class_name in ["floor", "ceiling"]:
-                slab_x0 = wx0 if wx0 is not None else x_min
-                slab_x1 = wx1 if wx1 is not None else x_max
-                slab_y0 = wy0 if wy0 is not None else y_min
-                slab_y1 = wy1 if wy1 is not None else y_max
+                slab_footprint = _fit_oriented_footprint(
+                    pts[:, :2],
+                    snap_to_ortho=True,
+                    side_lo=0.02,
+                    side_hi=0.98,
+                )
+                slab_polygon = [[float(pt[0]), float(pt[1])] for pt in slab_footprint["corners"]]
+                slab_x = [pt[0] for pt in slab_polygon]
+                slab_y = [pt[1] for pt in slab_polygon]
+                slab_x0 = wx0 if wx0 is not None and class_name == "floor" else min(slab_x)
+                slab_x1 = wx1 if wx1 is not None and class_name == "floor" else max(slab_x)
+                slab_y0 = wy0 if wy0 is not None and class_name == "floor" else min(slab_y)
+                slab_y1 = wy1 if wy1 is not None and class_name == "floor" else max(slab_y)
+                slab_thickness = float(np.clip(max(height, 0.18), 0.08, 0.4))
+                slab_z = float(z_max - slab_thickness) if class_name == "floor" else float(z_min)
 
                 bim_obj = {
                     "id": f"{class_name}_{idx}",
                     "type": class_name,
-                    "height": float(height),
-                    "thickness": 0.2,
+                    "height": slab_thickness,
+                    "thickness": slab_thickness,
                     "geometry": {
                         "start_x": float(slab_x0),
                         "start_y": float(slab_y0),
-                        "start_z": float(z_min),
+                        "start_z": slab_z,
                         "end_x": float(slab_x1),
                         "end_y": float(slab_y1),
-                        "end_z": float(z_min),
+                        "end_z": slab_z,
                     },
-                    "polygon": [
-                        [float(slab_x0), float(slab_y0)],
-                        [float(slab_x1), float(slab_y0)],
-                        [float(slab_x1), float(slab_y1)],
-                        [float(slab_x0), float(slab_y1)],
-                    ],
+                    "polygon": slab_polygon,
                 }
                 bim_data.append(bim_obj)
                 continue
 
-            start_pt, end_pt, fitted_thickness = _fit_linear_geometry(
+            if class_name == "column":
+                x_min = dims["x_min"]
+                x_max = dims["x_max"]
+                y_min = dims["y_min"]
+                y_max = dims["y_max"]
+                radius = float(np.clip(0.5 * max(x_max - x_min, y_max - y_min), 0.08, 0.6))
+                center_x = 0.5 * (x_min + x_max)
+                center_y = 0.5 * (y_min + y_max)
+                footprint = {
+                    "length": float(max(x_max - x_min, y_max - y_min)),
+                    "width": float(min(x_max - x_min, y_max - y_min)),
+                }
+                if not _is_plausible_nonwall_element(class_name, dims, footprint, len(pts)):
+                    rejected_counts[class_name] += 1
+                    continue
+                bim_data.append(
+                    {
+                        "id": f"{class_name}_{idx}",
+                        "type": class_name,
+                        "height": float(height),
+                        "thickness": radius * 2.0,
+                        "geometry": {
+                            "start_x": float(center_x),
+                            "start_y": float(center_y),
+                            "start_z": float(z_min),
+                            "end_x": float(center_x),
+                            "end_y": float(center_y),
+                            "end_z": float(z_min),
+                        },
+                    }
+                )
+                continue
+
+            start_pt, end_pt, fitted_thickness, polygon, footprint = _fit_linear_geometry(
                 pts[:, :2],
-                snap_to_ortho=class_name in ["wall", "beam", "column", "window", "door"],
+                snap_to_ortho=class_name in ["wall", "beam", "window", "door"],
             )
+
+            if class_name in rejected_counts and not _is_plausible_nonwall_element(
+                class_name,
+                dims,
+                footprint,
+                len(pts),
+            ):
+                rejected_counts[class_name] += 1
+                continue
 
             if class_name == "wall":
                 thickness = float(np.clip(fitted_thickness, 0.08, 0.6))
@@ -736,6 +1225,8 @@ def extract_bim_parameters(instances_dict):
                     "end_y": float(end_pt[1]),
                     "end_z": float(z_min),
                 },
+                "polygon": polygon,
+                "length": float(footprint["length"]),
             }
 
             if class_name == "wall":
@@ -750,6 +1241,9 @@ def extract_bim_parameters(instances_dict):
     walls = _snap_wall_endpoints_to_intersections(walls)
     _attach_openings_to_walls(walls, openings)
     bim_data.extend(walls)
+    rejected_total = sum(rejected_counts.values())
+    if rejected_total:
+        print(f"Rejected implausible extracted elements: {rejected_counts}")
     return bim_data
 
 
@@ -819,10 +1313,10 @@ def main(
         "ceiling": 2000,
         "floor": 2000,
         "wall": 1000,
-        "beam": 50,
-        "column": 50,
-        "window": 20,
-        "door": 50,
+        "beam": 180,
+        "column": 180,
+        "window": 100,
+        "door": 120,
     }
 
     all_instances = filter_small_instances(all_instances, cleaning_thresholds)

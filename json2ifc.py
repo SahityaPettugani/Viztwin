@@ -87,6 +87,20 @@ def get_meta(payload, key):
     return DEFAULTS[key]
 
 
+def polygon_from_element_geometry(element):
+    polygon = element.get("polygon")
+    if isinstance(polygon, list) and len(polygon) >= 3:
+        return [list(as_float_pair(p, "polygon[]")) for p in polygon]
+
+    geometry = element.get("geometry", {})
+    return [
+        [float(geometry["start_x"]), float(geometry["start_y"])],
+        [float(geometry["end_x"]), float(geometry["start_y"])],
+        [float(geometry["end_x"]), float(geometry["end_y"])],
+        [float(geometry["start_x"]), float(geometry["end_y"])],
+    ]
+
+
 def normalize_payload(payload):
     if isinstance(payload, dict):
         normalized = dict(payload)
@@ -361,14 +375,9 @@ def main():
                 ifc_model.create_rel_voids_element(ifc_wall, wall_opening)
         elif el_type == 'floor':
             geometry = element.get('geometry', {})
-            points = [
-                [float(geometry['start_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['end_y'])],
-                [float(geometry['start_x']), float(geometry['end_y'])]
-            ]
+            points = polygon_from_element_geometry(element)
             slab_z = float(geometry.get('start_z', 0.0))
-            slab_height = float(element.get('height', 0.2))
+            slab_height = float(element.get('thickness', element.get('height', 0.2)))
             material = element.get('material', material_for_objects)
             ifc_slab = ifc_model.create_slab(element['id'], points, slab_z, slab_height, material)
             if storeys_ifc:
@@ -376,14 +385,9 @@ def main():
                 ifc_model.assign_product_to_storey(ifc_slab, storeys_ifc[storey_number - 1])
         elif el_type == 'ceiling':
             geometry = element.get('geometry', {})
-            points = [
-                [float(geometry['start_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['end_y'])],
-                [float(geometry['start_x']), float(geometry['end_y'])]
-            ]
+            points = polygon_from_element_geometry(element)
             z_elev = float(geometry.get('start_z', 0.0))
-            height = float(element.get('height', 0.2))
+            height = float(element.get('thickness', element.get('height', 0.2)))
             material = element.get('material', material_for_objects)
             if hasattr(ifc_model, 'create_ceiling'):
                 ifc_ceiling = ifc_model.create_ceiling(element['id'], points, z_elev, height, material)
@@ -393,7 +397,10 @@ def main():
         elif el_type == 'door':
             geometry = element.get('geometry', {})
             if hasattr(ifc_model, 'create_door'):
-                ifc_model.create_door(element['id'], geometry)
+                door_geometry = dict(geometry)
+                door_geometry.setdefault('height', float(element.get('height', 2.1)))
+                door_geometry.setdefault('thickness', float(element.get('thickness', 0.1)))
+                ifc_model.create_door(element['id'], door_geometry)
         # Add more element types here as needed
         # Inside the "Unified element processing loop" in main()
         elif el_type == 'beam':
@@ -404,8 +411,10 @@ def main():
             ]
             z_pos = float(geometry.get('start_z', 0.0))
             height = float(element.get('height', 0.2))
+            thickness = float(element.get('thickness', 0.2))
+            storey_number = int(element.get('storey_number', 1))
             if hasattr(ifc_model, 'create_beam'):
-                ifc_beam = ifc_model.create_beam(element['id'], points, z_pos, height)
+                ifc_beam = ifc_model.create_beam(element['id'], points, z_pos, height, thickness=thickness)
                 ifc_model.assign_product_to_storey(ifc_beam, storeys_ifc[storey_number - 1])
 
         elif el_type == 'column':
@@ -413,8 +422,10 @@ def main():
             center_pt = [float(geometry['start_x']), float(geometry['start_y'])]
             z_pos = float(geometry.get('start_z', 0.0))
             height = float(element.get('height', 3.0))
+            radius = float(element.get('thickness', 0.4)) * 0.5
+            storey_number = int(element.get('storey_number', 1))
             if hasattr(ifc_model, 'create_column'):
-                ifc_col = ifc_model.create_column(element['id'], center_pt, z_pos, height)
+                ifc_col = ifc_model.create_column(element['id'], center_pt, z_pos, height, radius=radius)
                 ifc_model.assign_product_to_storey(ifc_col, storeys_ifc[storey_number - 1])
 
         elif el_type == 'window':
@@ -422,7 +433,10 @@ def main():
         # has a method to create them as independent products or voids
             geometry = element.get('geometry', {})
             if hasattr(ifc_model, 'create_window'):
-                ifc_model.create_window(element['id'], geometry)
+                window_geometry = dict(geometry)
+                window_geometry.setdefault('height', float(element.get('height', 1.2)))
+                window_geometry.setdefault('thickness', float(element.get('thickness', 0.1)))
+                ifc_model.create_window(element['id'], window_geometry)
 
     ifc_model.write()
     print(f"IFC model saved to {output_ifc}")
