@@ -421,7 +421,6 @@ const runLocalPipeline = async ({ inputPath, startTime }) => {
     checkpointPath,
     '--output_dir',
     requestOutputDir,
-    '--no-vis-instances'
   ];
 
   if (process.env.PYTHON_CPU === '1') {
@@ -484,7 +483,6 @@ const runLocalPipeline = async ({ inputPath, startTime }) => {
         bimJsonPath,
         '--output_ifc',
         bimIfcPath,
-        '--no-view-ifc',
       ];
       const ifcResult = await runPython(json2IfcScriptPath, json2IfcArgs, { cwd: cloud2BimDir });
       if (ifcResult.stdout) {

@@ -60,7 +60,6 @@ export default function App() {
   const [uploadError, setUploadError] = useState('');
   const [formData, setFormData] = useState<ProjectFormData>(emptyFormData);
   const [processingStage, setProcessingStage] = useState<'uploading' | 'processing' | 'complete'>('uploading');
-  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const uploadAbortController = useRef<AbortController | null>(null);
 
   useEffect(() => {

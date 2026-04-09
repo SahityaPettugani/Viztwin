@@ -641,7 +641,10 @@ const ThreeScene = memo(function ThreeScene({
     const normalizedGroup = new THREE.Group();
     const contentGroup = new THREE.Group();
     // Backend outputs are Z-up; rotate once into Three.js' Y-up world before fitting the camera.
-    contentGroup.rotation.x = -Math.PI / 2;
+    contentGroup.rotation.x = -Math.PI/2;
+    contentGroup.rotation.z = Math.PI;
+    // contentGroup.rotation.y = Math.PI;
+
     normalizedGroup.add(contentGroup);
     scene.add(normalizedGroup);
 
@@ -665,7 +668,7 @@ const ThreeScene = memo(function ThreeScene({
       box.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
       const scale = 5 / maxDim;
-      contentGroup.position.set(-center.x, -box.min.y, -center.z);
+      contentGroup.position.set(-center.x, -center.y, -box.min.z);
       normalizedGroup.scale.setScalar(scale);
       cameraTarget.set(0, 0, 0);
 
@@ -682,10 +685,7 @@ const ThreeScene = memo(function ThreeScene({
       );
       updateSphericalFromCamera();
       camera.lookAt(cameraTarget);
-      contentGroup.position.set(-center.x, -center.y, -center.z);
-      const normalizedScale = 5 / maxDim;
-      normalizedGroup.scale.setScalar(normalizedScale);
-      contentSizeRef.current.copy(size).multiplyScalar(normalizedScale);
+      contentSizeRef.current.copy(size).multiplyScalar(scale);
       orbitRadiusRef.current = Math.max(8, Math.max(contentSizeRef.current.x, contentSizeRef.current.y, contentSizeRef.current.z) * 2.4);
       applyCameraPreset(presetRef.current);
     };

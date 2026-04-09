@@ -192,11 +192,7 @@ export default function DesktopProjectLibrary({
   onOpenUpload: () => void;
   projects?: Project[];
   deletingProjectId?: string | null;
-<<<<<<< HEAD
-  onDeleteProject?: (project: Project) => void;
-=======
   onDeleteProject?: (projectId: string) => Promise<void>;
->>>>>>> origin/main
   authButtonLabel?: string;
   onAuthButtonClick?: () => void;
 }) {
