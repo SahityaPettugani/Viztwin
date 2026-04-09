@@ -83,6 +83,15 @@ def auto_downsample_for_device(pcd, device):
     print(f"Downsampled to {len(reduced.points)} points for {device} processing.")
     return reduced, True
 
+def adapt_dbscan_min_points(min_points, scale_factor):
+    if min_points <= 0:
+        return min_points
+    if scale_factor <= 1.0:
+        return int(min_points)
+
+    relaxed = int(round(min_points / min(scale_factor ** 0.5, 2.0)))
+    return max(10, relaxed)
+
 def rotation_matrix_from_vectors(source, target):
     source = np.asarray(source, dtype=np.float64)
     target = np.asarray(target, dtype=np.float64)
@@ -875,7 +884,7 @@ def merge_collinear_walls(wall_instances, dist_tolerance=0.2, angle_tolerance_de
     print(f"  Merged {len(wall_instances)} wall segments into {len(merged)} walls")
     return merged
 
-def remove_wall_like_points_from_columns(column_pcd, wall_instances):
+def remove_wall_like_points_from_columns(column_pcd, wall_instances, scale_factor=1.0):
     if len(column_pcd.points) == 0 or not wall_instances:
         return column_pcd
 
@@ -893,10 +902,11 @@ def remove_wall_like_points_from_columns(column_pcd, wall_instances):
         normal = line['normal'] / (np.linalg.norm(line['normal']) + 1e-8)
         rel_xy = points[:, :2] - line['center']
         lateral_dist = np.abs(rel_xy @ normal)
-        z_overlap = (points[:, 2] >= wall_z_min - 0.10) & (points[:, 2] <= wall_z_max + 0.10)
+        z_margin = max(0.02 * scale_factor, 0.005)
+        z_overlap = (points[:, 2] >= wall_z_min - z_margin) & (points[:, 2] <= wall_z_max + z_margin)
         # Be gentler here: columns commonly touch walls, so only remove points that are
         # extremely close to the wall centerline.
-        near_wall = lateral_dist <= max(line['thickness'] * 0.6, 0.05)
+        near_wall = lateral_dist <= max(line['thickness'] * 0.6, 0.01 * scale_factor)
         keep_mask &= ~(z_overlap & near_wall)
 
     filtered = column_pcd.select_by_index(np.where(keep_mask)[0])
@@ -905,7 +915,7 @@ def remove_wall_like_points_from_columns(column_pcd, wall_instances):
         print(f"  Removed {removed} column-labelled points that hug recovered wall planes")
     return filtered
 
-def fit_plane_model_from_instance(pcd):
+def fit_plane_model_from_instance(pcd, scale_factor=1.0):
     points = np.asarray(pcd.points, dtype=np.float32)
     if len(points) < 3:
         return None
@@ -918,7 +928,7 @@ def fit_plane_model_from_instance(pcd):
 
     try:
         plane_model, _ = sample_pcd.segment_plane(
-            distance_threshold=0.05,
+            distance_threshold=max(0.01 * scale_factor, 0.002),
             ransac_n=3,
             num_iterations=1000,
         )
@@ -926,7 +936,7 @@ def fit_plane_model_from_instance(pcd):
     except Exception:
         return None
 
-def remove_points_near_floor_ceiling(structural_pcd, floor_instances, ceiling_instances, margin=0.02):
+def remove_points_near_floor_ceiling(structural_pcd, floor_instances, ceiling_instances, margin=0.02, scale_factor=1.0):
     if len(structural_pcd.points) == 0:
         return structural_pcd
 
@@ -934,14 +944,14 @@ def remove_points_near_floor_ceiling(structural_pcd, floor_instances, ceiling_in
     keep_mask = np.ones(len(points), dtype=bool)
 
     if floor_instances:
-        floor_plane = fit_plane_model_from_instance(floor_instances[0])
+        floor_plane = fit_plane_model_from_instance(floor_instances[0], scale_factor=scale_factor)
         if floor_plane is not None:
             floor_normal = floor_plane[:3]
             floor_norm = np.linalg.norm(floor_normal) + 1e-8
             floor_dist = np.abs(points @ floor_normal + floor_plane[3]) / floor_norm
             keep_mask &= floor_dist > margin
     if ceiling_instances:
-        ceiling_plane = fit_plane_model_from_instance(ceiling_instances[0])
+        ceiling_plane = fit_plane_model_from_instance(ceiling_instances[0], scale_factor=scale_factor)
         if ceiling_plane is not None:
             ceiling_normal = ceiling_plane[:3]
             ceiling_norm = np.linalg.norm(ceiling_normal) + 1e-8
@@ -975,7 +985,7 @@ def retain_vertical_surface_points(pcd, radius=0.12, max_nn=30, vertical_normal_
     )
     return filtered
 
-def remove_non_structural_labels_from_geometry(pcd, separated_classes):
+def remove_non_structural_labels_from_geometry(pcd, separated_classes, scale_factor=1.0):
     if len(pcd.points) == 0:
         return pcd
 
@@ -994,7 +1004,7 @@ def remove_non_structural_labels_from_geometry(pcd, separated_classes):
     nbrs = NearestNeighbors(n_neighbors=1, algorithm='kd_tree', n_jobs=-1).fit(subtract_points)
     chunk_size = 50000
     keep_mask = np.ones(len(base_points), dtype=bool)
-    removal_radius = 0.04
+    removal_radius = max(0.008 * scale_factor, 0.002)
 
     for start in range(0, len(base_points), chunk_size):
         end = min(start + chunk_size, len(base_points))
@@ -1484,6 +1494,31 @@ def extract_bim_parameters(instances_dict):
     room_polygon = compute_oriented_room_polygon(wall_refs, room_footprint)
     room_edges = get_room_edges_from_polygon(room_polygon)
 
+    def safe_box_params(pcd):
+        pts = np.asarray(pcd.points, dtype=np.float32)
+        if len(pts) == 0:
+            return None
+
+        try:
+            obb = pcd.get_oriented_bounding_box()
+            center = np.asarray(obb.center, dtype=np.float32)
+            extent = np.asarray(obb.extent, dtype=np.float32)
+            return center, extent
+        except RuntimeError as exc:
+            message = str(exc)
+            if "QH6154" not in message and "Qhull precision error" not in message:
+                raise
+
+            aabb = pcd.get_axis_aligned_bounding_box()
+            center = np.asarray(aabb.get_center(), dtype=np.float32)
+            extent = np.asarray(aabb.get_extent(), dtype=np.float32)
+
+            # Give near-flat instances a small thickness so export stays stable.
+            max_dim = float(np.max(extent)) if extent.size else 0.0
+            min_supported = max(max_dim * 1e-3, 1e-3)
+            extent = np.maximum(extent, min_supported)
+            return center, extent
+
     for class_name, pcd_list in instances_dict.items():
         for idx, pcd in enumerate(pcd_list):
             pts = np.asarray(pcd.points)
@@ -1491,9 +1526,10 @@ def extract_bim_parameters(instances_dict):
                 continue
 
             if class_name in ['beam', 'column', 'door', 'window']:
-                obb = pcd.get_oriented_bounding_box()
-                center = obb.center
-                extent = obb.extent
+                box_params = safe_box_params(pcd)
+                if box_params is None:
+                    continue
+                center, extent = box_params
                 half_extent = extent / 2.0
                 start = center - half_extent
                 end = center + half_extent
@@ -1623,9 +1659,6 @@ def main(
         wall_ransac_thresh = auto_config['wall_ransac_thresh']
     if floor_ceiling_ransac_thresh is None:
         floor_ceiling_ransac_thresh = auto_config['floor_ceiling_ransac_thresh']
-    wall_ransac_thresh = max(wall_ransac_thresh, 0.045)
-    floor_ceiling_ransac_thresh = max(floor_ceiling_ransac_thresh, 0.03)
-
     print("\nLoading BIMNet models...")
     models = build_models(checkpoint_paths, device, num_classes=num_classes)
 
@@ -1644,6 +1677,7 @@ def main(
         return None
 
     scale_factor, estimated_room_height = estimate_scene_scale_factor(separated_classes)
+    print(f"Estimated room height: {estimated_room_height:.3f} m-equivalent, applying scale factor {scale_factor:.3f}")
     instantiation_pcd = scale_point_cloud(pcd, scale_factor)
     instantiation_classes = {
         class_name: scale_point_cloud(class_pcd, scale_factor)
@@ -1657,14 +1691,16 @@ def main(
         dbscan_params = {
             class_name: {
                 'eps': params['eps'] * scale_factor,
-                'min_points': params['min_points'],
+                'min_points': adapt_dbscan_min_points(params['min_points'], scale_factor),
             }
             for class_name, params in auto_config['dbscan_params'].items()
         }
-        wall_ransac_thresh = wall_ransac_thresh * scale_factor
-        floor_ceiling_ransac_thresh = floor_ceiling_ransac_thresh * scale_factor
+        wall_ransac_thresh = max(wall_ransac_thresh * scale_factor, 0.012)
+        floor_ceiling_ransac_thresh = max(floor_ceiling_ransac_thresh * scale_factor, 0.008)
     else:
         dbscan_params = auto_config['dbscan_params']
+        wall_ransac_thresh = max(wall_ransac_thresh, 0.012)
+        floor_ceiling_ransac_thresh = max(floor_ceiling_ransac_thresh, 0.008)
     wall_instances = []
 
     for class_name, class_pcd in instantiation_classes.items():
@@ -1674,16 +1710,21 @@ def main(
             )
         elif class_name == 'wall':
             wall_source = o3d.geometry.PointCloud(instantiation_pcd)
-            wall_source = remove_non_structural_labels_from_geometry(wall_source, instantiation_classes)
+            wall_source = remove_non_structural_labels_from_geometry(
+                wall_source,
+                instantiation_classes,
+                scale_factor=scale_factor,
+            )
             wall_source = remove_points_near_floor_ceiling(
                 wall_source,
                 all_instances.get('floor', []),
                 all_instances.get('ceiling', []),
-                margin=max(0.025, wall_ransac_thresh * 0.4)
+                margin=max(0.004 * scale_factor, floor_ceiling_ransac_thresh * 0.5),
+                scale_factor=scale_factor,
             )
             wall_source = retain_vertical_surface_points(
                 wall_source,
-                radius=max(0.08, wall_ransac_thresh * 1.5),
+                radius=max(0.015 * scale_factor, wall_ransac_thresh * 0.8),
                 max_nn=40,
                 vertical_normal_z_max=0.45
             )
@@ -1701,7 +1742,11 @@ def main(
             wall_instances = instances
         elif class_name == 'column':
             params = dbscan_params.get(class_name, {'eps': 0.3, 'min_points': 100})
-            cleaned_column_pcd = remove_wall_like_points_from_columns(class_pcd, wall_instances)
+            cleaned_column_pcd = remove_wall_like_points_from_columns(
+                class_pcd,
+                wall_instances,
+                scale_factor=scale_factor,
+            )
             instances = instantiate_with_dbscan(cleaned_column_pcd, class_name, **params)
             instances = refine_instances_with_context(instances, class_name, all_instances, scale_factor=scale_factor)
         else:
