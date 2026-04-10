@@ -64,6 +64,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 const modalBaseUrl = process.env.MODAL_ENDPOINT_URL?.replace(/\/$/, '');
+const useModalPipeline = process.env.USE_MODAL_PIPELINE !== '0' && Boolean(modalBaseUrl);
 const modalPollIntervalMs = Number(process.env.MODAL_POLL_INTERVAL_MS || 5000);
 const modalJobTimeoutMs = Number(process.env.MODAL_JOB_TIMEOUT_MS || 60 * 60 * 1000);
 
@@ -359,6 +360,9 @@ const waitForModalResult = async (jobId) => {
 };
 
 const runModalPipeline = async ({ inputPath, originalName }) => {
+  if (!modalBaseUrl) {
+    throw new Error('MODAL_ENDPOINT_URL is not configured.');
+  }
   console.log(`[process-pointcloud] Using Modal pipeline: ${modalBaseUrl}`);
   const safeStem = path.parse(originalName).name.replace(/[^a-zA-Z0-9._-]/g, '_');
   const requestOutputDir = path.join(outputsDir, `${Date.now()}_${safeStem}`);
@@ -557,6 +561,16 @@ app.get('/api/modal-status', async (_req, res) => {
     return;
   }
 
+  if (!useModalPipeline) {
+    res.json({
+      connected: false,
+      mode: 'local',
+      endpoint: modalBaseUrl,
+      message: 'MODAL_ENDPOINT_URL is configured, but USE_MODAL_PIPELINE=0 forces local Python fallback.',
+    });
+    return;
+  }
+
   try {
     const response = await fetch(`${modalBaseUrl}/health`, {
       headers: getModalAuthHeaders(),
@@ -601,13 +615,13 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
 
   const inputPath = req.file.path;
   const startTime = Date.now();
-  console.log(`[process-pointcloud] Mode for this request: ${modalBaseUrl ? 'Modal' : 'local Python fallback'}`);
+  console.log(`[process-pointcloud] Mode for this request: ${useModalPipeline ? 'Modal' : 'local Python fallback'}`);
   console.log('[process-pointcloud] Received file:', inputPath);
   console.log('[process-pointcloud] Output dir:', outputsDir);
   console.log('[process-pointcloud] Input size (bytes):', req.file.size);
 
   try {
-    const processingResult = modalBaseUrl
+    const processingResult = useModalPipeline
       ? await runModalPipeline({ inputPath, originalName: req.file.originalname })
       : await runLocalPipeline({ inputPath, startTime });
 
@@ -642,7 +656,7 @@ const startServer = async () => {
   await fs.mkdir(uploadsDir, { recursive: true });
   await fs.mkdir(outputsDir, { recursive: true });
 
-  if (modalBaseUrl) {
+  if (modalBaseUrl && useModalPipeline) {
     try {
       const response = await fetch(`${modalBaseUrl}/health`, {
         headers: getModalAuthHeaders(),
@@ -654,6 +668,8 @@ const startServer = async () => {
       console.warn(`[startup] Modal configured but unreachable: ${modalBaseUrl}`);
       console.warn(`[startup] Modal connection error: ${error instanceof Error ? error.message : error}`);
     }
+  } else if (modalBaseUrl) {
+    console.log('[startup] Modal endpoint configured but disabled via USE_MODAL_PIPELINE=0. Using local Python fallback.');
   } else {
     console.log('[startup] Modal not configured. Using local Python fallback.');
   }
@@ -661,7 +677,7 @@ const startServer = async () => {
   return new Promise((resolve) => {
     const server = app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
-      console.log(`[startup] Point cloud processing mode: ${modalBaseUrl ? `Modal (${modalBaseUrl})` : 'local Python fallback'}`);
+      console.log(`[startup] Point cloud processing mode: ${useModalPipeline ? `Modal (${modalBaseUrl})` : 'local Python fallback'}`);
       resolve(server);
     });
   });

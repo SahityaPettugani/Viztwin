@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from generate_ifc import IFCmodel
@@ -101,44 +102,161 @@ def polygon_from_element_geometry(element):
     ]
 
 
+def element_base_z(element):
+    geometry = element.get("geometry", {})
+    return float(geometry.get("start_z", 0.0))
+
+
+def element_height(element, default=0.0):
+    return float(element.get("height", element.get("thickness", default)))
+
+
+def infer_storey_number(z_value, storey_defs):
+    if not storey_defs:
+        return 1
+    elevations = [float(storey["elevation"]) for storey in storey_defs]
+    candidates = [idx + 1 for idx, elevation in enumerate(elevations) if z_value >= elevation - 0.15]
+    if candidates:
+        return candidates[-1]
+    nearest_idx = min(range(len(elevations)), key=lambda idx: abs(elevations[idx] - z_value))
+    return nearest_idx + 1
+
+
+def _warn_skip(message):
+    print(f"[json2ifc] Warning: {message}", file=sys.stderr)
+
+
+def _resolve_storey(storeys_ifc, storey_number, context):
+    if not storeys_ifc:
+        raise ValueError(f"{context}: no IFC storeys were created.")
+    try:
+        storey_idx = int(storey_number) - 1
+    except Exception:
+        _warn_skip(f"{context}: invalid storey '{storey_number}', defaulting to first storey.")
+        storey_idx = 0
+    if storey_idx < 0 or storey_idx >= len(storeys_ifc):
+        _warn_skip(
+            f"{context}: storey {storey_number} out of range 1..{len(storeys_ifc)}, clamping to nearest valid storey."
+        )
+        storey_idx = min(max(storey_idx, 0), len(storeys_ifc) - 1)
+    return storeys_ifc[storey_idx]
+
+
+def _normalize_element_record(item, default_storey=1):
+    if not isinstance(item, dict):
+        raise ValueError(f"Element must be an object. Got: {type(item)}")
+    if "type" not in item:
+        raise ValueError(f"Element missing 'type': {item}")
+    if item["type"] in {"wall", "floor", "ceiling", "beam", "column", "window", "door"}:
+        geometry = item.get("geometry")
+        if not isinstance(geometry, dict):
+            raise ValueError(f"Element missing or invalid geometry: {item}")
+    record = dict(item)
+    record.setdefault("id", f"{record['type']}_{default_storey}")
+    record.setdefault("material", DEFAULTS["material_for_objects"])
+    return record
+
+
 def normalize_payload(payload):
     if isinstance(payload, dict):
         normalized = dict(payload)
         normalized.setdefault("storeys", [])
         normalized.setdefault("walls", [])
+        normalized.setdefault("slabs", [])
+        normalized.setdefault("ceilings", [])
+        normalized.setdefault("beams", [])
+        normalized.setdefault("columns", [])
+        normalized.setdefault("doors", [])
+        normalized.setdefault("windows", [])
+        normalized.setdefault("spaces", [])
         return normalized
 
     if isinstance(payload, list):
-        walls = []
-        for idx, item in enumerate(payload, start=1):
-            if not isinstance(item, dict):
-                raise ValueError(f"Item {idx} must be an object. Got: {type(item)}")
-            if item.get("type") != "wall":
-                continue
+        records = [_normalize_element_record(item, idx) for idx, item in enumerate(payload, start=1)]
+        floor_records = [item for item in records if item.get("type") == "floor"]
+        floor_records.sort(key=element_base_z)
 
-            geometry = item.get("geometry", {})
-            if not geometry:
-                raise ValueError(f"Item {idx} missing 'geometry'.")
-
-            start_point = [float(geometry["start_x"]), float(geometry["start_y"])]
-            end_point = [float(geometry["end_x"]), float(geometry["end_y"])]
-            z_placement = float(geometry.get("start_z", 0.0))
-
-            walls.append(
+        storeys = []
+        for idx, floor in enumerate(floor_records, start=1):
+            floor_polygon = polygon_from_element_geometry(floor)
+            floor_z = element_base_z(floor)
+            floor_thickness = float(floor.get("thickness", element_height(floor, 0.2)))
+            storeys.append(
                 {
-                    "id": item.get("id", f"wall_{idx - 1}"),
-                    "storey": 1,
-                    "start_point": start_point,
-                    "end_point": end_point,
-                    "thickness": float(item.get("thickness", 0.2)),
-                    "material": item.get("material", DEFAULTS["material_for_objects"]),
-                    "z_placement": z_placement,
-                    "height": float(item["height"]),
-                    "openings": item.get("openings", []),
+                    "number": idx,
+                    "name": floor.get("name", f"Storey {idx}"),
+                    "elevation": floor_z,
+                    "slab": {
+                        "name": floor.get("id", f"floor_{idx}"),
+                        "polygon": floor_polygon,
+                        "z": floor_z,
+                        "thickness": floor_thickness,
+                        "material": floor.get("material", DEFAULTS["material_for_objects"]),
+                    },
                 }
             )
 
-        return {"storeys": [], "walls": walls}
+        if not storeys:
+            storeys = [{"number": 1, "name": "Storey 1", "elevation": 0.0}]
+
+        walls = []
+        ceilings = []
+        beams = []
+        columns = []
+        windows = []
+        doors = []
+
+        for item in records:
+            item_type = item.get("type")
+            storey_number = infer_storey_number(element_base_z(item), storeys)
+            geometry = item.get("geometry", {})
+            if item_type == "wall":
+                walls.append(
+                    {
+                        "id": item["id"],
+                        "storey": storey_number,
+                        "start_point": [float(geometry["start_x"]), float(geometry["start_y"])],
+                        "end_point": [float(geometry["end_x"]), float(geometry["end_y"])],
+                        "thickness": float(item.get("thickness", 0.2)),
+                        "material": item.get("material", DEFAULTS["material_for_objects"]),
+                        "z_placement": float(geometry.get("start_z", 0.0)),
+                        "height": element_height(item, 3.0),
+                        "polygon": item.get("polygon"),
+                        "openings": item.get("openings", []),
+                    }
+                )
+            elif item_type == "ceiling":
+                record = dict(item)
+                record["storey_number"] = storey_number
+                ceilings.append(record)
+            elif item_type == "beam":
+                record = dict(item)
+                record["storey_number"] = storey_number
+                beams.append(record)
+            elif item_type == "column":
+                record = dict(item)
+                record["storey_number"] = storey_number
+                columns.append(record)
+            elif item_type == "window":
+                record = dict(item)
+                record["storey_number"] = storey_number
+                windows.append(record)
+            elif item_type == "door":
+                record = dict(item)
+                record["storey_number"] = storey_number
+                doors.append(record)
+
+        return {
+            "storeys": storeys,
+            "walls": walls,
+            "slabs": [storey["slab"] for storey in storeys if storey.get("slab")],
+            "ceilings": ceilings,
+            "beams": beams,
+            "columns": columns,
+            "windows": windows,
+            "doors": doors,
+            "spaces": [],
+        }
 
     raise ValueError("Unsupported JSON root. Expected object or array.")
 
@@ -159,89 +277,30 @@ def create_storeys_and_slabs(ifc_model, payload, material_for_objects):
 
         slab = storey.get("slab")
         if slab:
-            slab_name = slab.get("name", f"Slab {idx}")
-            slab_points = [list(as_float_pair(p, f"storeys[{idx}].slab.polygon[]")) for p in slab["polygon"]]
-            slab_z = float(slab["z"])
-            slab_thickness = float(slab["thickness"])
-            slab_material = slab.get("material", material_for_objects)
-            ifc_slab = ifc_model.create_slab(slab_name, slab_points, slab_z, slab_thickness, slab_material)
-            ifc_model.assign_product_to_storey(ifc_slab, ifc_storey)
+            try:
+                slab_name = slab.get("name", f"Slab {idx}")
+                slab_points = [list(as_float_pair(p, f"storeys[{idx}].slab.polygon[]")) for p in slab["polygon"]]
+                slab_z = float(slab["z"])
+                slab_thickness = float(slab["thickness"])
+                slab_material = slab.get("material", material_for_objects)
+                ifc_slab = ifc_model.create_slab(slab_name, slab_points, slab_z, slab_thickness, slab_material)
+                ifc_model.assign_product_to_storey(ifc_slab, ifc_storey)
+            except Exception as exc:
+                _warn_skip(f"Skipping slab for storey {idx}: {exc}")
 
         spaces = storey.get("spaces", [])
         if spaces:
             ifc_space_placement = ifc_model.space_placement(elevation)
             for space_idx, space in enumerate(spaces, start=1):
-                vertices = [list(as_float_pair(v, f"storeys[{idx}].spaces[{space_idx}].vertices[]")) for v in space["vertices"]]
-                height = float(space["height"])
-                dimensions = {"vertices": vertices}
-                ifc_model.create_space(dimensions, ifc_space_placement, idx, space_idx, ifc_storey, height)
+                try:
+                    vertices = [list(as_float_pair(v, f"storeys[{idx}].spaces[{space_idx}].vertices[]")) for v in space["vertices"]]
+                    height = float(space["height"])
+                    dimensions = {"vertices": vertices}
+                    ifc_model.create_space(dimensions, ifc_space_placement, idx, space_idx, ifc_storey, height)
+                except Exception as exc:
+                    _warn_skip(f"Skipping space {space_idx} on storey {idx}: {exc}")
 
     return storeys_ifc
-
-
-def create_walls_and_openings(ifc_model, storeys_ifc, payload):
-    walls = payload.get("walls", [])
-    for wall_idx, wall in enumerate(walls, start=1):
-        start_point = tuple(as_float_pair(wall["start_point"], f"walls[{wall_idx}].start_point"))
-        end_point = tuple(as_float_pair(wall["end_point"], f"walls[{wall_idx}].end_point"))
-        wall_thickness = float(wall["thickness"])
-        wall_material = wall.get("material", "Concrete")
-        wall_z_placement = float(wall["z_placement"])
-        wall_height = float(wall["height"])
-        storey_number = int(wall["storey"])
-        if storey_number < 1 or storey_number > len(storeys_ifc):
-            raise ValueError(
-                f"walls[{wall_idx}].storey={storey_number} out of range. "
-                f"Expected 1..{len(storeys_ifc)}."
-            )
-
-        material_layer = ifc_model.create_material_layer(wall_thickness, wall_material)
-        material_layer_set = ifc_model.create_material_layer_set([material_layer])
-        material_layer_set_usage = ifc_model.create_material_layer_set_usage(material_layer_set, wall_thickness)
-        wall_placement = ifc_model.wall_placement(wall_z_placement)
-        wall_axis_placement = ifc_model.wall_axis_placement(start_point, end_point)
-        wall_axis_representation = ifc_model.wall_axis_representation(wall_axis_placement)
-        wall_swept_solid_representation = ifc_model.wall_swept_solid_representation(
-            start_point, end_point, wall_height, wall_thickness
-        )
-        product_definition_shape = ifc_model.product_definition_shape(
-            wall_axis_representation, wall_swept_solid_representation
-        )
-        ifc_wall = ifc_model.create_wall(wall_placement, product_definition_shape)
-        ifc_model.assign_material(ifc_wall, material_layer_set_usage)
-        wall_type = ifc_model.create_wall_type(ifc_wall, wall_thickness)
-        ifc_model.assign_material(wall_type[0], material_layer_set)
-        ifc_model.assign_product_to_storey(ifc_wall, storeys_ifc[storey_number - 1])
-
-        for opening_idx, opening in enumerate(wall.get("openings", []), start=1):
-            x_start = float(opening["x_range_start"])
-            x_end = float(opening["x_range_end"])
-            z_min = float(opening["z_range_min"])
-            z_max = float(opening["z_range_max"])
-            if x_end <= x_start:
-                raise ValueError(f"walls[{wall_idx}].openings[{opening_idx}] has x_range_end <= x_range_start.")
-            if z_max <= z_min:
-                raise ValueError(f"walls[{wall_idx}].openings[{opening_idx}] has z_range_max <= z_range_min.")
-
-            opening_width = x_end - x_start
-            opening_height = z_max - z_min
-            offset_from_start = x_start
-            opening_sill_height = z_min
-
-            opening_closed_profile = ifc_model.opening_closed_profile_def(opening_width, wall_thickness)
-            opening_placement = ifc_model.opening_placement(start_point, wall_placement)
-            opening_extrusion = ifc_model.opening_extrusion(
-                opening_closed_profile,
-                opening_height,
-                start_point,
-                end_point,
-                opening_sill_height,
-                offset_from_start,
-            )
-            opening_representation = ifc_model.opening_representation(opening_extrusion)
-            opening_product_definition = ifc_model.product_definition_shape_opening(opening_representation)
-            wall_opening = ifc_model.create_wall_opening(opening_placement[1], opening_product_definition)
-            ifc_model.create_rel_voids_element(ifc_wall, wall_opening)
 
 
 def _preview_ifc(ifc_path, renderer):
@@ -311,132 +370,100 @@ def main():
 
     storeys_ifc = create_storeys_and_slabs(ifc_model, payload, material_for_objects)
 
-    # Unified element processing loop
-    for idx, element in enumerate(payload_raw):
-        if not isinstance(element, dict):
-            raise ValueError(f"Element at index {idx} is not a dict or missing geometry: {element}")
-        el_type = element.get('type')
-        if not el_type:
-            raise ValueError(f"Element at index {idx} missing 'type' key: {element}")
-        # Defensive: check geometry for types that require it
-        if el_type in ('wall', 'floor', 'ceiling', 'door', 'beam', 'column', 'window'):
-            geometry = element.get('geometry')
-            if not isinstance(geometry, dict):
-                raise ValueError(f"Element at index {idx} missing or invalid geometry: {element}")
-        if el_type == 'wall':
-            geometry = element['geometry']
-            start_point = (float(geometry['start_x']), float(geometry['start_y']))
-            end_point = (float(geometry['end_x']), float(geometry['end_y']))
-            wall_thickness = float(element.get('thickness', 0.2))
-            wall_material = element.get('material', material_for_objects)
-            wall_z_placement = float(geometry.get('start_z', 0.0))
-            wall_height = float(element.get('height', 3.0))
-            storey_number = int(element.get('storey_number', 1))
-            material_layer = ifc_model.create_material_layer(wall_thickness, wall_material)
-            material_layer_set = ifc_model.create_material_layer_set([material_layer])
-            material_layer_set_usage = ifc_model.create_material_layer_set_usage(material_layer_set, wall_thickness)
-            wall_placement = ifc_model.wall_placement(wall_z_placement)
-            wall_axis_placement = ifc_model.wall_axis_placement(start_point, end_point)
-            wall_axis_representation = ifc_model.wall_axis_representation(wall_axis_placement)
-            wall_swept_solid_representation = ifc_model.wall_swept_solid_representation(
-                start_point, end_point, wall_height, wall_thickness
+    consumed_opening_ids = set()
+    for wall_idx, wall in enumerate(payload.get("walls", []), start=1):
+        try:
+            start_point = tuple(as_float_pair(wall["start_point"], f"walls[{wall_idx}].start_point"))
+            end_point = tuple(as_float_pair(wall["end_point"], f"walls[{wall_idx}].end_point"))
+            ifc_wall = ifc_model.create_wall_element(
+                name=wall.get("id", f"wall_{wall_idx}"),
+                start_point=start_point,
+                end_point=end_point,
+                z_placement=float(wall["z_placement"]),
+                wall_height=float(wall["height"]),
+                wall_thickness=float(wall["thickness"]),
+                material_name=wall.get("material", material_for_objects),
+                openings=wall.get("openings", []),
             )
-            product_definition_shape = ifc_model.product_definition_shape(
-                wall_axis_representation, wall_swept_solid_representation
+            ifc_model.assign_product_to_storey(
+                ifc_wall,
+                _resolve_storey(storeys_ifc, wall.get("storey", 1), f"walls[{wall_idx}]"),
             )
-            ifc_wall = ifc_model.create_wall(wall_placement, product_definition_shape)
-            ifc_model.assign_material(ifc_wall, material_layer_set_usage)
-            wall_type = ifc_model.create_wall_type(ifc_wall, wall_thickness)
-            ifc_model.assign_material(wall_type[0], material_layer_set)
-            ifc_model.assign_product_to_storey(ifc_wall, storeys_ifc[storey_number - 1])
-            # Openings
-            for opening in element.get('openings', []):
-                x_start = float(opening['x_range_start'])
-                x_end = float(opening['x_range_end'])
-                z_min = float(opening['z_range_min'])
-                z_max = float(opening['z_range_max'])
-                opening_width = x_end - x_start
-                opening_height = z_max - z_min
-                offset_from_start = x_start
-                opening_sill_height = z_min
-                opening_closed_profile = ifc_model.opening_closed_profile_def(opening_width, wall_thickness)
-                opening_placement = ifc_model.opening_placement(start_point, wall_placement)
-                opening_extrusion = ifc_model.opening_extrusion(
-                    opening_closed_profile,
-                    opening_height,
-                    start_point,
-                    end_point,
-                    opening_sill_height,
-                    offset_from_start,
+            consumed_opening_ids.update(str(opening.get("id")) for opening in wall.get("openings", []))
+        except Exception as exc:
+            _warn_skip(f"Skipping wall {wall.get('id', wall_idx)}: {exc}")
+
+    for element in payload.get("ceilings", []):
+        try:
+            ifc_ceiling = ifc_model.create_ceiling(
+                element["id"],
+                polygon_from_element_geometry(element),
+                element_base_z(element),
+                float(element.get("thickness", element_height(element, 0.2))),
+                element.get("material", material_for_objects),
+            )
+            ifc_model.assign_product_to_storey(
+                ifc_ceiling,
+                _resolve_storey(storeys_ifc, element.get("storey_number", 1), f"ceiling {element.get('id')}"),
+            )
+        except Exception as exc:
+            _warn_skip(f"Skipping ceiling {element.get('id', '?')}: {exc}")
+
+    for element in payload.get("beams", []):
+        try:
+            geometry = element.get("geometry", {})
+            ifc_beam = ifc_model.create_beam(
+                element["id"],
+                [
+                    [float(geometry["start_x"]), float(geometry["start_y"])],
+                    [float(geometry["end_x"]), float(geometry["end_y"])],
+                ],
+                float(geometry.get("start_z", 0.0)),
+                element_height(element, 0.2),
+                thickness=float(element.get("thickness", 0.2)),
+            )
+            ifc_model.assign_product_to_storey(
+                ifc_beam,
+                _resolve_storey(storeys_ifc, element.get("storey_number", 1), f"beam {element.get('id')}"),
+            )
+        except Exception as exc:
+            _warn_skip(f"Skipping beam {element.get('id', '?')}: {exc}")
+
+    for element in payload.get("columns", []):
+        try:
+            geometry = element.get("geometry", {})
+            ifc_column = ifc_model.create_column(
+                element["id"],
+                [float(geometry["start_x"]), float(geometry["start_y"])],
+                float(geometry.get("start_z", 0.0)),
+                element_height(element, 3.0),
+                radius=float(element.get("thickness", 0.4)) * 0.5,
+            )
+            ifc_model.assign_product_to_storey(
+                ifc_column,
+                _resolve_storey(storeys_ifc, element.get("storey_number", 1), f"column {element.get('id')}"),
+            )
+        except Exception as exc:
+            _warn_skip(f"Skipping column {element.get('id', '?')}: {exc}")
+
+    for key, creator_name in (("doors", "create_door"), ("windows", "create_window")):
+        creator = getattr(ifc_model, creator_name, None)
+        if creator is None:
+            continue
+        for element in payload.get(key, []):
+            if str(element.get("id")) in consumed_opening_ids:
+                continue
+            try:
+                geometry = dict(element.get("geometry", {}))
+                geometry.setdefault("height", element_height(element, 2.1 if key == "doors" else 1.2))
+                geometry.setdefault("thickness", float(element.get("thickness", 0.1)))
+                product = creator(element["id"], geometry)
+                ifc_model.assign_product_to_storey(
+                    product,
+                    _resolve_storey(storeys_ifc, element.get("storey_number", 1), f"{key[:-1]} {element.get('id')}"),
                 )
-                opening_representation = ifc_model.opening_representation(opening_extrusion)
-                opening_product_definition = ifc_model.product_definition_shape_opening(opening_representation)
-                wall_opening = ifc_model.create_wall_opening(opening_placement[1], opening_product_definition)
-                ifc_model.create_rel_voids_element(ifc_wall, wall_opening)
-        elif el_type == 'floor':
-            geometry = element.get('geometry', {})
-            points = polygon_from_element_geometry(element)
-            slab_z = float(geometry.get('start_z', 0.0))
-            slab_height = float(element.get('thickness', element.get('height', 0.2)))
-            material = element.get('material', material_for_objects)
-            ifc_slab = ifc_model.create_slab(element['id'], points, slab_z, slab_height, material)
-            if storeys_ifc:
-                storey_number = int(element.get('storey_number', 1))
-                ifc_model.assign_product_to_storey(ifc_slab, storeys_ifc[storey_number - 1])
-        elif el_type == 'ceiling':
-            geometry = element.get('geometry', {})
-            points = polygon_from_element_geometry(element)
-            z_elev = float(geometry.get('start_z', 0.0))
-            height = float(element.get('thickness', element.get('height', 0.2)))
-            material = element.get('material', material_for_objects)
-            if hasattr(ifc_model, 'create_ceiling'):
-                ifc_ceiling = ifc_model.create_ceiling(element['id'], points, z_elev, height, material)
-                if storeys_ifc:
-                    storey_number = int(element.get('storey_number', 1))
-                    ifc_model.assign_product_to_storey(ifc_ceiling, storeys_ifc[storey_number - 1])
-        elif el_type == 'door':
-            geometry = element.get('geometry', {})
-            if hasattr(ifc_model, 'create_door'):
-                door_geometry = dict(geometry)
-                door_geometry.setdefault('height', float(element.get('height', 2.1)))
-                door_geometry.setdefault('thickness', float(element.get('thickness', 0.1)))
-                ifc_model.create_door(element['id'], door_geometry)
-        # Add more element types here as needed
-        # Inside the "Unified element processing loop" in main()
-        elif el_type == 'beam':
-            geometry = element.get('geometry', {})
-            points = [
-                [float(geometry['start_x']), float(geometry['start_y'])],
-                [float(geometry['end_x']), float(geometry['end_y'])]
-            ]
-            z_pos = float(geometry.get('start_z', 0.0))
-            height = float(element.get('height', 0.2))
-            thickness = float(element.get('thickness', 0.2))
-            storey_number = int(element.get('storey_number', 1))
-            if hasattr(ifc_model, 'create_beam'):
-                ifc_beam = ifc_model.create_beam(element['id'], points, z_pos, height, thickness=thickness)
-                ifc_model.assign_product_to_storey(ifc_beam, storeys_ifc[storey_number - 1])
-
-        elif el_type == 'column':
-            geometry = element.get('geometry', {})
-            center_pt = [float(geometry['start_x']), float(geometry['start_y'])]
-            z_pos = float(geometry.get('start_z', 0.0))
-            height = float(element.get('height', 3.0))
-            radius = float(element.get('thickness', 0.4)) * 0.5
-            storey_number = int(element.get('storey_number', 1))
-            if hasattr(ifc_model, 'create_column'):
-                ifc_col = ifc_model.create_column(element['id'], center_pt, z_pos, height, radius=radius)
-                ifc_model.assign_product_to_storey(ifc_col, storeys_ifc[storey_number - 1])
-
-        elif el_type == 'window':
-        # Windows are typically openings in walls; ensure your IFCmodel 
-        # has a method to create them as independent products or voids
-            geometry = element.get('geometry', {})
-            if hasattr(ifc_model, 'create_window'):
-                window_geometry = dict(geometry)
-                window_geometry.setdefault('height', float(element.get('height', 1.2)))
-                window_geometry.setdefault('thickness', float(element.get('thickness', 0.1)))
-                ifc_model.create_window(element['id'], window_geometry)
+            except Exception as exc:
+                _warn_skip(f"Skipping {key[:-1]} {element.get('id', '?')}: {exc}")
 
     ifc_model.write()
     print(f"IFC model saved to {output_ifc}")

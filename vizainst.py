@@ -65,81 +65,6 @@ def _rotation_matrix_from_vectors(src, dst):
     return np.eye(3, dtype=float) + vx + (vx @ vx) * ((1.0 - c) / (s * s + 1e-12))
 
 
-def _axis_name(axis_index):
-    return ("x", "y", "z")[axis_index]
-
-
-def _extreme_slab_count(values, lower=True, slab_fraction=0.08):
-    if values.size == 0:
-        return 0
-
-    lo = float(values.min())
-    hi = float(values.max())
-    span = hi - lo
-    if span <= 1e-9:
-        return int(values.size)
-
-    slab = max(span * slab_fraction, 1e-6)
-    if lower:
-        return int(np.count_nonzero(values <= lo + slab))
-    return int(np.count_nonzero(values >= hi - slab))
-
-
-def _infer_up_axis(points):
-    if len(points) == 0:
-        return 2, False
-
-    ranges = points.max(axis=0) - points.min(axis=0)
-    axis_scores = []
-    for axis in range(3):
-        low_count = _extreme_slab_count(points[:, axis], lower=True)
-        high_count = _extreme_slab_count(points[:, axis], lower=False)
-        slab_support = low_count + high_count
-        axis_scores.append((float(ranges[axis]), -slab_support, axis, low_count, high_count))
-
-    axis_scores.sort()
-    _, _, up_axis, low_count, high_count = axis_scores[0]
-    flip_vertical = high_count > max(low_count * 1.15, low_count + 500)
-    return up_axis, flip_vertical
-
-
-def _orient_point_cloud_by_axis_heuristic(pcd):
-    if len(pcd.points) == 0:
-        return pcd
-
-    points = np.asarray(pcd.points).copy()
-    colors = np.asarray(pcd.colors).copy() if pcd.has_colors() else None
-    normals = np.asarray(pcd.normals).copy() if pcd.has_normals() else None
-
-    inferred_up_axis, flip_vertical = _infer_up_axis(points)
-    print(
-        "Auto orientation fallback: "
-        f"detected up axis={_axis_name(inferred_up_axis).upper()}, "
-        f"flip_vertical={'yes' if flip_vertical else 'no'}"
-    )
-
-    if inferred_up_axis != 2:
-        perm = [axis for axis in range(3) if axis != inferred_up_axis] + [inferred_up_axis]
-        points = points[:, perm]
-        if normals is not None:
-            normals = normals[:, perm]
-
-    if flip_vertical:
-        points[:, 2] *= -1.0
-        if normals is not None:
-            normals[:, 2] *= -1.0
-
-    points[:, 2] -= float(points[:, 2].min())
-
-    oriented = o3d.geometry.PointCloud()
-    oriented.points = o3d.utility.Vector3dVector(points)
-    if colors is not None:
-        oriented.colors = o3d.utility.Vector3dVector(colors)
-    if normals is not None:
-        oriented.normals = o3d.utility.Vector3dVector(normals)
-    return oriented
-
-
 def orient_point_cloud_floor_down(
     pcd,
     distance_threshold=0.08,
@@ -149,9 +74,7 @@ def orient_point_cloud_floor_down(
     min_inlier_ratio=0.08,
 ):
     if len(pcd.points) < 200:
-        oriented = _orient_point_cloud_by_axis_heuristic(pcd)
-        print("Auto orientation: used axis heuristic for small point cloud.")
-        return oriented
+        return pcd
 
     points = np.asarray(pcd.points)
     total_points = len(points)
@@ -195,8 +118,8 @@ def orient_point_cloud_floor_down(
         work_pcd = work_pcd.select_by_index(inliers, invert=True)
 
     if best_candidate is None or best_candidate["horizontal_score"] < 0.75:
-        print("Auto orientation: no reliable horizontal plane found, using axis heuristic.")
-        return _orient_point_cloud_by_axis_heuristic(pcd)
+        print("Auto orientation skipped: no reliable horizontal plane found.")
+        return pcd
 
     plane_normal = best_candidate["normal"]
     if plane_normal[2] < 0.0:
@@ -206,12 +129,9 @@ def orient_point_cloud_floor_down(
     rotated_points = points @ rotation.T
     rotated_plane_center = np.asarray(best_candidate["plane_center"], dtype=float) @ rotation.T
     plane_mean_z = float(rotated_plane_center[2])
-    below_count = int(np.count_nonzero(rotated_points[:, 2] < plane_mean_z - distance_threshold))
-    above_count = int(np.count_nonzero(rotated_points[:, 2] > plane_mean_z + distance_threshold))
+    cloud_mid_z = float(np.median(rotated_points[:, 2]))
 
-    # A floor plane should have most of the scene above it. If the opposite is
-    # true, the detected dominant horizontal plane is acting like a ceiling.
-    if above_count < below_count:
+    if plane_mean_z > cloud_mid_z:
         flip_rotation = np.array(
             [
                 [1.0, 0.0, 0.0],
@@ -222,8 +142,7 @@ def orient_point_cloud_floor_down(
         )
         rotation = flip_rotation @ rotation
         rotated_points = points @ rotation.T
-        plane_normal = plane_normal @ flip_rotation.T
-        print("Auto orientation: flipped scene so most geometry sits above the detected floor plane.")
+        print("Auto orientation: flipped scene so the dominant horizontal plane is below.")
 
     rotated_points[:, 2] -= rotated_points[:, 2].min()
 
@@ -237,8 +156,7 @@ def orient_point_cloud_floor_down(
 
     print(
         "Auto orientation: aligned dominant horizontal plane to the floor "
-        f"(score={best_candidate['horizontal_score']:.3f}, inliers={best_candidate['inlier_count']}, "
-        f"above={above_count}, below={below_count})."
+        f"(score={best_candidate['horizontal_score']:.3f}, inliers={best_candidate['inlier_count']})."
     )
     return oriented
 
@@ -776,6 +694,108 @@ def _fit_linear_geometry(xy_pts, snap_to_ortho=False):
     return start_pt, end_pt, thickness, polygon, footprint
 
 
+def _fit_frame_constrained_footprint(
+    xy_pts,
+    frame_origin,
+    frame_direction,
+    frame_normal,
+    main_lo=0.02,
+    main_hi=0.98,
+    side_lo=0.05,
+    side_hi=0.95,
+):
+    pts = np.asarray(xy_pts, dtype=float)
+    proj_main = (pts - frame_origin) @ frame_direction
+    proj_side = (pts - frame_origin) @ frame_normal
+    main_min, main_max = _quantile_range(proj_main, main_lo, main_hi)
+    side_min, side_max = _quantile_range(proj_side, side_lo, side_hi)
+    c0 = frame_origin + frame_direction * main_min + frame_normal * side_min
+    c1 = frame_origin + frame_direction * main_max + frame_normal * side_min
+    c2 = frame_origin + frame_direction * main_max + frame_normal * side_max
+    c3 = frame_origin + frame_direction * main_min + frame_normal * side_max
+    return {
+        "origin": np.asarray(frame_origin, dtype=float),
+        "direction": np.asarray(frame_direction, dtype=float),
+        "normal": np.asarray(frame_normal, dtype=float),
+        "main_min": float(main_min),
+        "main_max": float(main_max),
+        "side_min": float(side_min),
+        "side_max": float(side_max),
+        "length": float(max(0.0, main_max - main_min)),
+        "width": float(max(0.0, side_max - side_min)),
+        "corners": [c0, c1, c2, c3],
+    }
+
+
+def _fit_linear_geometry_from_frame(
+    xy_pts,
+    frame_origin,
+    frame_direction,
+    frame_normal,
+    side_lo=0.05,
+    side_hi=0.95,
+):
+    pts = np.asarray(xy_pts, dtype=float)
+    proj_main = (pts - frame_origin) @ frame_direction
+    proj_side = (pts - frame_origin) @ frame_normal
+    main_span = _quantile_range(proj_main, 0.02, 0.98)
+    side_span = _quantile_range(proj_side, side_lo, side_hi)
+
+    alt_main_span = _quantile_range(proj_side, 0.02, 0.98)
+    alt_side_span = _quantile_range(proj_main, side_lo, side_hi)
+
+    use_primary = (main_span[1] - main_span[0]) >= (alt_main_span[1] - alt_main_span[0])
+    if use_primary:
+        footprint = _fit_frame_constrained_footprint(
+            pts,
+            frame_origin=frame_origin,
+            frame_direction=frame_direction,
+            frame_normal=frame_normal,
+            main_lo=0.02,
+            main_hi=0.98,
+            side_lo=side_lo,
+            side_hi=side_hi,
+        )
+    else:
+        footprint = _fit_frame_constrained_footprint(
+            pts,
+            frame_origin=frame_origin,
+            frame_direction=frame_normal,
+            frame_normal=-frame_direction,
+            main_lo=0.02,
+            main_hi=0.98,
+            side_lo=side_lo,
+            side_hi=side_hi,
+        )
+
+    side_center = 0.5 * (footprint["side_min"] + footprint["side_max"])
+    start_pt = (
+        footprint["origin"]
+        + footprint["direction"] * footprint["main_min"]
+        + footprint["normal"] * side_center
+    )
+    end_pt = (
+        footprint["origin"]
+        + footprint["direction"] * footprint["main_max"]
+        + footprint["normal"] * side_center
+    )
+    thickness = float(max(0.05, footprint["width"]))
+    polygon = [[float(pt[0]), float(pt[1])] for pt in footprint["corners"]]
+    return start_pt, end_pt, thickness, polygon, footprint
+
+
+def _global_wall_frame(wall_xy_pts):
+    pts = np.asarray(wall_xy_pts, dtype=float)
+    if len(pts) < 10:
+        return None
+    origin, direction, normal2d = _fit_principal_axes(pts, snap_to_ortho=True)
+    return {
+        "origin": origin,
+        "direction": direction,
+        "normal": normal2d,
+    }
+
+
 def _class_dims_from_points(pts):
     x_min, x_max = _quantile_range(pts[:, 0], 0.05, 0.95)
     y_min, y_max = _quantile_range(pts[:, 1], 0.05, 0.95)
@@ -1111,8 +1131,24 @@ def extract_bim_parameters(instances_dict):
         wall_all = np.vstack(wall_pts_all)
         wx0, wx1 = _quantile_range(wall_all[:, 0])
         wy0, wy1 = _quantile_range(wall_all[:, 1])
+        wall_frame = _global_wall_frame(wall_all[:, :2])
+        if wall_frame is not None:
+            wall_envelope = _fit_frame_constrained_footprint(
+                wall_all[:, :2],
+                frame_origin=wall_frame["origin"],
+                frame_direction=wall_frame["direction"],
+                frame_normal=wall_frame["normal"],
+                main_lo=0.02,
+                main_hi=0.98,
+                side_lo=0.02,
+                side_hi=0.98,
+            )
+        else:
+            wall_envelope = None
     else:
         wx0 = wx1 = wy0 = wy1 = None
+        wall_frame = None
+        wall_envelope = None
 
     for class_name, pcd_list in instances_dict.items():
         for idx, pcd in enumerate(pcd_list):
@@ -1124,19 +1160,33 @@ def extract_bim_parameters(instances_dict):
             z_max = float(dims["z_max"])
             height = float(dims["z_span"])
             if class_name in ["floor", "ceiling"]:
-                slab_footprint = _fit_oriented_footprint(
-                    pts[:, :2],
-                    snap_to_ortho=True,
-                    side_lo=0.02,
-                    side_hi=0.98,
-                )
+                if wall_envelope is not None:
+                    slab_footprint = wall_envelope
+                elif wall_frame is not None:
+                    slab_footprint = _fit_frame_constrained_footprint(
+                        pts[:, :2],
+                        frame_origin=wall_frame["origin"],
+                        frame_direction=wall_frame["direction"],
+                        frame_normal=wall_frame["normal"],
+                        main_lo=0.02,
+                        main_hi=0.98,
+                        side_lo=0.02,
+                        side_hi=0.98,
+                    )
+                else:
+                    slab_footprint = _fit_oriented_footprint(
+                        pts[:, :2],
+                        snap_to_ortho=True,
+                        side_lo=0.02,
+                        side_hi=0.98,
+                    )
                 slab_polygon = [[float(pt[0]), float(pt[1])] for pt in slab_footprint["corners"]]
                 slab_x = [pt[0] for pt in slab_polygon]
                 slab_y = [pt[1] for pt in slab_polygon]
-                slab_x0 = wx0 if wx0 is not None and class_name == "floor" else min(slab_x)
-                slab_x1 = wx1 if wx1 is not None and class_name == "floor" else max(slab_x)
-                slab_y0 = wy0 if wy0 is not None and class_name == "floor" else min(slab_y)
-                slab_y1 = wy1 if wy1 is not None and class_name == "floor" else max(slab_y)
+                slab_x0 = min(slab_x)
+                slab_x1 = max(slab_x)
+                slab_y0 = min(slab_y)
+                slab_y1 = max(slab_y)
                 slab_thickness = float(np.clip(max(height, 0.18), 0.08, 0.4))
                 slab_z = float(z_max - slab_thickness) if class_name == "floor" else float(z_min)
 
@@ -1191,10 +1241,20 @@ def extract_bim_parameters(instances_dict):
                 )
                 continue
 
-            start_pt, end_pt, fitted_thickness, polygon, footprint = _fit_linear_geometry(
-                pts[:, :2],
-                snap_to_ortho=class_name in ["wall", "beam", "window", "door"],
-            )
+            if wall_frame is not None and class_name in ["wall", "beam", "window", "door"]:
+                start_pt, end_pt, fitted_thickness, polygon, footprint = _fit_linear_geometry_from_frame(
+                    pts[:, :2],
+                    frame_origin=wall_frame["origin"],
+                    frame_direction=wall_frame["direction"],
+                    frame_normal=wall_frame["normal"],
+                    side_lo=0.05,
+                    side_hi=0.95,
+                )
+            else:
+                start_pt, end_pt, fitted_thickness, polygon, footprint = _fit_linear_geometry(
+                    pts[:, :2],
+                    snap_to_ortho=class_name in ["wall", "beam", "window", "door"],
+                )
 
             if class_name in rejected_counts and not _is_plausible_nonwall_element(
                 class_name,
