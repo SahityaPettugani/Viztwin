@@ -1059,7 +1059,9 @@ export default function ModelViewer({
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftProjectTitle, setDraftProjectTitle] = useState(projectTitle);
+  const selectedLayerRef = useRef<HTMLLabelElement | null>(null);
   const uploadedFileName = getUploadedFileNameFromUrl(rawPointCloudUrl);
+  const selectedElementId = selectedElement?.elementId ?? null;
 
   const handleDeleteClick = async () => {
     if (!onDeleteProject || isDeletingProject) {
@@ -1337,6 +1339,41 @@ export default function ModelViewer({
   }, [resolvedTab?.key]);
 
   useEffect(() => {
+    if (!selectedElementId) {
+      return;
+    }
+
+    const parentCategory = filters.find((category) =>
+      category.items.some((item) => item.id === selectedElementId)
+    );
+
+    if (!parentCategory) {
+      return;
+    }
+
+    setExpandedCategories((current) => ({
+      ...current,
+      [parentCategory.name]: true,
+    }));
+  }, [filters, selectedElementId]);
+
+  useEffect(() => {
+    if (!selectedElementId) {
+      selectedLayerRef.current = null;
+      return;
+    }
+
+    if (!selectedLayerRef.current) {
+      return;
+    }
+
+    selectedLayerRef.current.scrollIntoView({
+      block: 'nearest',
+      behavior: 'smooth',
+    });
+  }, [selectedElementId]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const buildLegend = async () => {
@@ -1502,19 +1539,35 @@ export default function ModelViewer({
                   {isExpanded && (
                     <div className="border-t border-[#ececec] px-[0.52vw] py-[0.52vw]">
                       <div className="space-y-[0.42vw]">
-                        {category.items.map((item) => (
-                          <label key={item.id} className="flex items-center gap-[0.52vw] cursor-pointer hover:bg-[#e8e9eb] p-[0.52vw] rounded-[0.52vw] transition-colors">
-                            <input
-                              type="checkbox"
-                              checked={item.enabled}
-                              onChange={() => toggleFilter(category.name, item.id)}
-                              className="w-[1.04vw] h-[1.04vw] accent-[#91f9d0]"
-                            />
-                            <span className="font-['Satoshi_Variable:Medium',sans-serif] text-[0.94vw] text-[#000001]">
-                              {item.name}
-                            </span>
-                          </label>
-                        ))}
+                        {category.items.map((item) => {
+                          const isSelected = item.id === selectedElementId;
+
+                          return (
+                            <label
+                              key={item.id}
+                              ref={(element) => {
+                                if (isSelected) {
+                                  selectedLayerRef.current = element;
+                                }
+                              }}
+                              className={`flex items-center gap-[0.52vw] cursor-pointer rounded-[0.52vw] border p-[0.52vw] transition-colors ${
+                                isSelected
+                                  ? 'border-[#5ed6aa] bg-[#ddfff1]'
+                                  : 'border-transparent hover:bg-[#e8e9eb]'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={item.enabled}
+                                onChange={() => toggleFilter(category.name, item.id)}
+                                className="w-[1.04vw] h-[1.04vw] accent-[#91f9d0]"
+                              />
+                              <span className="font-['Satoshi_Variable:Medium',sans-serif] text-[0.94vw] text-[#000001]">
+                                {item.name}
+                              </span>
+                            </label>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
