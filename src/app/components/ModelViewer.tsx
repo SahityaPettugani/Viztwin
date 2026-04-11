@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from 'react';
-import { ChevronDown, ChevronRight, Pencil, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Pencil, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { StandardizedHeaderS } from '../../imports/SharedHeader';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
@@ -72,6 +72,12 @@ interface LegendItem {
 
 interface ZoomCommand {
   type: 'in' | 'out';
+  nonce: number;
+}
+
+interface RotateCommand {
+  axis: 'x' | 'y';
+  delta: number;
   nonce: number;
 }
 
@@ -453,6 +459,7 @@ function ThreeScene({
   viewMode,
   viewPreset,
   zoomCommand,
+  rotateCommand,
   elementVisibility,
   onBimSelect,
 }: {
@@ -463,11 +470,13 @@ function ThreeScene({
   viewMode: 'instanced' | 'bim';
   viewPreset: ViewPreset;
   zoomCommand: ZoomCommand | null;
+  rotateCommand: RotateCommand | null;
   elementVisibility?: Record<string, boolean>;
   onBimSelect?: (id: string | null) => void;
 }) {
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const normalizedGroupRef = useRef<THREE.Group | null>(null);
   const targetRef = useRef(new THREE.Vector3(0, 0, 0));
   const orbitRadiusRef = useRef(12);
   const azimuthRef = useRef(-Math.PI / 4);
@@ -475,6 +484,8 @@ function ThreeScene({
   const presetRef = useRef<ViewPreset>(viewPreset);
   const contentSizeRef = useRef(new THREE.Vector3(1, 1, 1));
   const zoomCommandNonceRef = useRef(0);
+  const rotateCommandNonceRef = useRef(0);
+  const contentRotationRef = useRef(new THREE.Euler(0, 0, 0));
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -615,6 +626,8 @@ function ThreeScene({
     const mouse = new THREE.Vector2();
     const normalizedGroup = new THREE.Group();
     const contentGroup = new THREE.Group();
+    normalizedGroupRef.current = normalizedGroup;
+    normalizedGroup.rotation.copy(contentRotationRef.current);
     normalizedGroup.add(contentGroup);
     scene.add(normalizedGroup);
 
@@ -915,6 +928,7 @@ function ThreeScene({
         }
       });
       sceneRef.current = null;
+      normalizedGroupRef.current = null;
     };
   }, [filters, pointCloudUrl, bimModelUrl, viewMode, containerRef, onBimSelect, elementVisibility]);
 
@@ -994,6 +1008,26 @@ function ThreeScene({
   }, [zoomCommand]);
 
   useEffect(() => {
+    if (
+      !rotateCommand
+      || rotateCommand.nonce === rotateCommandNonceRef.current
+      || !normalizedGroupRef.current
+    ) {
+      return;
+    }
+
+    rotateCommandNonceRef.current = rotateCommand.nonce;
+
+    if (rotateCommand.axis === 'x') {
+      contentRotationRef.current.x += rotateCommand.delta;
+    } else {
+      contentRotationRef.current.y += rotateCommand.delta;
+    }
+
+    normalizedGroupRef.current.rotation.copy(contentRotationRef.current);
+  }, [rotateCommand]);
+
+  useEffect(() => {
     if (!bimModelUrl || !elementVisibility || !sceneRef.current) {
       return;
     }
@@ -1036,6 +1070,7 @@ export default function ModelViewer({
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const [viewPreset, setViewPreset] = useState<ViewPreset>('all');
   const [zoomCommand, setZoomCommand] = useState<ZoomCommand | null>(null);
+  const [rotateCommand, setRotateCommand] = useState<RotateCommand | null>(null);
 
   const [activeTab, setActiveTab] = useState<'instanced' | 'bim'>('instanced');
 
@@ -1666,6 +1701,27 @@ export default function ModelViewer({
             </div>
           </div>
 
+          <div className="absolute bottom-[1.56vw] left-1/2 z-10 flex -translate-x-1/2 items-center gap-[0.62vw] rounded-[0.78vw] border border-[#d7d7d7] bg-white/92 px-[0.62vw] py-[0.52vw] shadow-sm">
+            <button
+              type="button"
+              onClick={() => setRotateCommand({ axis: 'y', delta: Math.PI / 12, nonce: Date.now() })}
+              className="flex items-center gap-[0.36vw] rounded-[0.52vw] border border-[#d7d7d7] bg-white px-[0.72vw] py-[0.52vw] text-[0.78vw] font-['Satoshi_Variable:Medium',sans-serif] text-[#333333] transition-colors hover:bg-[#f5f5f5]"
+              title="Rotate content along Y axis"
+            >
+              <ChevronLeft className="h-[1vw] w-[1vw]" />
+              Rotate Y
+            </button>
+            <button
+              type="button"
+              onClick={() => setRotateCommand({ axis: 'x', delta: Math.PI / 12, nonce: Date.now() })}
+              className="flex items-center gap-[0.36vw] rounded-[0.52vw] border border-[#d7d7d7] bg-white px-[0.72vw] py-[0.52vw] text-[0.78vw] font-['Satoshi_Variable:Medium',sans-serif] text-[#333333] transition-colors hover:bg-[#f5f5f5]"
+              title="Rotate content along X axis"
+            >
+              Rotate X
+              <ChevronRight className="h-[1vw] w-[1vw]" />
+            </button>
+          </div>
+
           {availableTabs.length > 1 && (
             <div className="absolute top-[3.2vw] left-[1.04vw] z-10 flex gap-[0.42vw] bg-white/90 border border-[#d7d7d7] rounded-[0.78vw] p-[0.42vw] shadow-sm">
               {availableTabs.map((tab) => (
@@ -1695,6 +1751,7 @@ export default function ModelViewer({
               bimModelUrl={activeBimModelUrl}
               viewPreset={viewPreset}
               zoomCommand={zoomCommand}
+              rotateCommand={rotateCommand}
               elementVisibility={elementVisibility}
               viewMode={resolvedTab?.key || 'instanced'}
               onBimSelect={resolvedTab?.key === 'bim' ? handleBimSelect : undefined}
