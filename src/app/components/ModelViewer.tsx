@@ -1704,7 +1704,7 @@ export default function ModelViewer({
           <div className="absolute bottom-[1.56vw] left-1/2 z-10 flex -translate-x-1/2 items-center gap-[0.62vw] rounded-[0.78vw] border border-[#d7d7d7] bg-white/92 px-[0.62vw] py-[0.52vw] shadow-sm">
             <button
               type="button"
-              onClick={() => setRotateCommand({ axis: 'y', delta: Math.PI / 12, nonce: Date.now() })}
+              onClick={() => setRotateCommand({ axis: 'y', delta: Math.PI / 2, nonce: Date.now() })}
               className="flex items-center gap-[0.36vw] rounded-[0.52vw] border border-[#d7d7d7] bg-white px-[0.72vw] py-[0.52vw] text-[0.78vw] font-['Satoshi_Variable:Medium',sans-serif] text-[#333333] transition-colors hover:bg-[#f5f5f5]"
               title="Rotate content along Y axis"
             >
@@ -1713,7 +1713,7 @@ export default function ModelViewer({
             </button>
             <button
               type="button"
-              onClick={() => setRotateCommand({ axis: 'x', delta: Math.PI / 12, nonce: Date.now() })}
+              onClick={() => setRotateCommand({ axis: 'x', delta: Math.PI / 2, nonce: Date.now() })}
               className="flex items-center gap-[0.36vw] rounded-[0.52vw] border border-[#d7d7d7] bg-white px-[0.72vw] py-[0.52vw] text-[0.78vw] font-['Satoshi_Variable:Medium',sans-serif] text-[#333333] transition-colors hover:bg-[#f5f5f5]"
               title="Rotate content along X axis"
             >
