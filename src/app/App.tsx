@@ -31,6 +31,8 @@ const emptyFormData: ProjectFormData = {
   country: '',
   buildingType: '',
 };
+const MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_SIZE_LABEL = '2 GB';
 
 const normalizeProcessResultUrls = (processResult: ProcessPointCloudResult): ProcessPointCloudResult => ({
   ...processResult,
@@ -133,6 +135,11 @@ export default function App() {
   };
 
   const handleFileSelect = (file: File) => {
+    if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+      alert(`Error: File exceeds the ${MAX_UPLOAD_SIZE_LABEL} upload limit.`);
+      return;
+    }
+
     setUploadedFile(file);
     setUploadedFileName(file.name);
   };
@@ -149,6 +156,11 @@ export default function App() {
 
     if (!uploadedFile) {
       alert('Error: No file selected. Please select a .ply file.');
+      return;
+    }
+
+    if (uploadedFile.size > MAX_UPLOAD_SIZE_BYTES) {
+      alert(`Error: File exceeds the ${MAX_UPLOAD_SIZE_LABEL} upload limit.`);
       return;
     }
 

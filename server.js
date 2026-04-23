@@ -102,6 +102,8 @@ await loadEnvFile(path.join(__dirname, '.env'));
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
+const MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_SIZE_LABEL = '2 GB';
 
 const uploadsDir = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, 'uploads'));
 const outputsDir = path.resolve(process.env.OUTPUTS_DIR || path.join(__dirname, 'outputs'));
@@ -140,7 +142,12 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: MAX_UPLOAD_SIZE_BYTES,
+  },
+});
 const modalBaseUrl = process.env.MODAL_ENDPOINT_URL?.replace(/\/$/, '');
 const modalPollIntervalMs = Number(process.env.MODAL_POLL_INTERVAL_MS || 5000);
 const modalJobTimeoutMs = Number(process.env.MODAL_JOB_TIMEOUT_MS || 60 * 60 * 1000);
@@ -642,6 +649,18 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
       // Ignore cleanup failures.
     }
   }
+});
+
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+    res.status(413).json({
+      success: false,
+      error: `File exceeds the ${MAX_UPLOAD_SIZE_LABEL} upload limit.`,
+    });
+    return;
+  }
+
+  next(error);
 });
 
 const validateStartupPaths = async () => {

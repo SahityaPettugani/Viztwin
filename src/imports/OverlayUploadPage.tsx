@@ -1,6 +1,9 @@
 import svgPaths from "./svg-i5o0bgtwbw";
 import { useRef } from 'react';
 
+const MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_SIZE_LABEL = '2 GB';
+
 function UploadIcon({ onClick }: { onClick: () => void }) {
   return (
     <div className="absolute inset-[21.82%_67.68%_27.53%_20.9%]" data-name="upload icon">
@@ -57,7 +60,7 @@ function Group1() {
   return (
     <div className="-translate-x-1/2 -translate-y-1/2 absolute contents left-1/2 top-[calc(50%-28.5px)]">
       <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Medium',sans-serif] leading-[normal] left-[285.5px] not-italic text-[32px] text-black text-center top-[362px] w-[571px] whitespace-pre-wrap">Upload or drag and drop a file.</p>
-      <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Regular',sans-serif] leading-[normal] left-[285.5px] not-italic text-[24px] text-black text-center top-[406px] w-[457px] whitespace-pre-wrap">{`File format : PLY, Max ~2 GB `}</p>
+      <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Regular',sans-serif] leading-[normal] left-[285.5px] not-italic text-[24px] text-black text-center top-[406px] w-[457px] whitespace-pre-wrap">{`File format : PLY, Max ${MAX_UPLOAD_SIZE_LABEL}`}</p>
       <InterfaceFileTextTextCommonFile />
     </div>
   );
@@ -78,6 +81,14 @@ export default function OverlayUploadPage({ onUploadClick, onFileSelect }: { onU
       if (!fileName.endsWith('.ply')) {
         alert('Error: Please upload a .ply file only.');
         // Reset the input
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+        return;
+      }
+
+      if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+        alert(`Error: File exceeds the ${MAX_UPLOAD_SIZE_LABEL} upload limit.`);
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
