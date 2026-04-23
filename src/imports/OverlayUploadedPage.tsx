@@ -73,7 +73,7 @@ function UploadFileThing() {
   return (
     <div className="-translate-x-1/2 -translate-y-1/2 absolute contents left-[calc(50%+5.5px)] top-[calc(50%-132.5px)]" data-name="upload file thing">
       <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Bold',sans-serif] font-bold leading-[35px] left-[241px] text-[#000001] text-[36px] text-center top-[292px] w-[280px] whitespace-pre-wrap">UPLOADED SUCCESSFULLY</p>
-      <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Regular',sans-serif] font-normal leading-[normal] left-[240px] text-[#000001] text-[24px] text-center top-[378px] whitespace-nowrap">{`File format : PLY, Max ~GB `}</p>
+      <p className="-translate-x-1/2 absolute font-['Satoshi_Variable:Regular',sans-serif] font-normal leading-[normal] left-[240px] text-[#000001] text-[24px] text-center top-[378px] whitespace-nowrap">{`File format : PLY, Max ~2 GB `}</p>
       <InterfaceFileTextTextCommonFile />
     </div>
   );

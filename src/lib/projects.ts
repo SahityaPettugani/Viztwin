@@ -16,6 +16,7 @@ export interface Project {
   bimModelUrl?: string;
   bimIfcUrl?: string;
   bimPropsUrl?: string;
+  storageBasePath?: string;
 }
 
 export interface GeneratedFile {
@@ -103,6 +104,7 @@ const mapProjectRow = (row: ProjectRow): Project => ({
   bimModelUrl: getPublicAssetUrl(row.bim_obj_file_path),
   bimIfcUrl: getPublicAssetUrl(row.bim_ifc_file_path),
   bimPropsUrl: getPublicAssetUrl(row.bim_props_file_path),
+  storageBasePath: `${row.user_id}/${row.id}`,
 });
 
 const fetchBlob = async (assetUrl: string) => {

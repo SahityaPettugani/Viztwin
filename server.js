@@ -8,6 +8,59 @@ import fs from 'fs/promises';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const envPath = path.join(__dirname, '.env');
+
+const loadDotEnv = async (dotenvPath) => {
+  try {
+    const raw = await fs.readFile(dotenvPath, 'utf8');
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) {
+        continue;
+      }
+
+      const equalsIndex = trimmed.indexOf('=');
+      if (equalsIndex === -1) {
+        continue;
+      }
+
+      const key = trimmed.slice(0, equalsIndex).trim();
+      let value = trimmed.slice(equalsIndex + 1).trim();
+
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+
+      if (!(key in process.env)) {
+        process.env[key] = value;
+      }
+    }
+
+    console.log(`[config] Loaded environment from ${dotenvPath}`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+};
+
+const resolveConfigPath = (targetPath) => {
+  if (!targetPath) {
+    return targetPath;
+  }
+
+  return path.isAbsolute(targetPath)
+    ? targetPath
+    : path.resolve(__dirname, targetPath);
+};
+
+const pathExists = async (targetPath) =>
+  fs.stat(targetPath).then(() => true).catch(() => false);
+
+await loadDotEnv(envPath);
 
 const loadEnvFile = async (envFilePath) => {
   try {
@@ -49,9 +102,37 @@ await loadEnvFile(path.join(__dirname, '.env'));
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
+const MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_SIZE_LABEL = '2 GB';
 
 const uploadsDir = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, 'uploads'));
 const outputsDir = path.resolve(process.env.OUTPUTS_DIR || path.join(__dirname, 'outputs'));
+
+const getRuntimeConfig = () => {
+  const backendScanToBimDir = resolveConfigPath(
+    process.env.SCANTOBIM_DIR || path.join('BACKEND', 'scantobim')
+  );
+  const backendCloud2BimDir = resolveConfigPath(
+    process.env.CLOUD2BIM_DIR || path.join('BACKEND', 'cloud2bim')
+  );
+
+  return {
+    backendScanToBimDir,
+    backendCloud2BimDir,
+    pythonScriptPath: resolveConfigPath(
+      process.env.PYTHON_SCRIPT || path.join(backendScanToBimDir, 'viz_2.py')
+    ),
+    pythonCheckpointPath: resolveConfigPath(
+      process.env.PYTHON_CHECKPOINT || path.join(backendScanToBimDir, 'log', 'val_best_miou.pth')
+    ),
+    json2IfcScriptPath: resolveConfigPath(
+      process.env.PYTHON_JSON2IFC_SCRIPT || path.join(backendCloud2BimDir, 'json2ifc.py')
+    ),
+    ifcObjExporterScriptPath: resolveConfigPath(
+      process.env.PYTHON_IFC_EXPORTER_SCRIPT || path.join(__dirname, 'ifc_obj_exporter.py')
+    ),
+  };
+};
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
@@ -61,7 +142,12 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: MAX_UPLOAD_SIZE_BYTES,
+  },
+});
 const modalBaseUrl = process.env.MODAL_ENDPOINT_URL?.replace(/\/$/, '');
 const modalPollIntervalMs = Number(process.env.MODAL_POLL_INTERVAL_MS || 5000);
 const modalJobTimeoutMs = Number(process.env.MODAL_JOB_TIMEOUT_MS || 60 * 60 * 1000);
@@ -109,6 +195,16 @@ const findLatestCombinedOutput = async (dir, startTime) => {
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return candidates[0].fullPath;
+};
+
+const readInstantiationSummary = async (runDir) => {
+  try {
+    const summaryPath = path.join(runDir, 'instantiation_summary.json');
+    const raw = await fs.readFile(summaryPath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 };
 
 const listFilesRecursive = async (dir, rootDir = dir) => {
@@ -314,11 +410,12 @@ const runModalPipeline = async ({ inputPath, originalName }) => {
 
 const runLocalPipeline = async ({ inputPath, startTime }) => {
   console.log('[process-pointcloud] Using local Python fallback pipeline');
-  const checkpointPath = process.env.PYTHON_CHECKPOINT || path.join(__dirname, 'models', 'val_best_miou.pth');
-  const vizInstScriptPath = process.env.PYTHON_SCRIPT || path.join(__dirname, 'vizainst.py');
-  const cloud2BimDir = process.env.CLOUD2BIM_DIR || __dirname;
-  const json2IfcScriptPath = process.env.PYTHON_JSON2IFC_SCRIPT || path.join(__dirname, 'json2ifc.py');
-  const ifcObjExporterScriptPath = process.env.PYTHON_IFC_EXPORTER_SCRIPT || path.join(__dirname, 'ifc_obj_exporter.py');
+  const runtimeConfig = getRuntimeConfig();
+  const checkpointPath = runtimeConfig.pythonCheckpointPath;
+  const vizInstScriptPath = runtimeConfig.pythonScriptPath;
+  const cloud2BimDir = runtimeConfig.backendCloud2BimDir;
+  const json2IfcScriptPath = runtimeConfig.json2IfcScriptPath;
+  const ifcObjExporterScriptPath = runtimeConfig.ifcObjExporterScriptPath;
   const enableBimPreview = process.env.ENABLE_BIM_PREVIEW !== '0';
   const safeStem = path.parse(inputPath).name.replace(/[^a-zA-Z0-9._-]/g, '_');
   const requestOutputDir = path.join(outputsDir, `${Date.now()}_${safeStem}`);
@@ -331,7 +428,6 @@ const runLocalPipeline = async ({ inputPath, startTime }) => {
     checkpointPath,
     '--output_dir',
     requestOutputDir,
-    '--no-vis-instances'
   ];
 
   if (process.env.PYTHON_CPU === '1') {
@@ -340,17 +436,20 @@ const runLocalPipeline = async ({ inputPath, startTime }) => {
 
   const runStart = Date.now();
   console.log('[process-pointcloud] Python script:', vizInstScriptPath);
+  console.log('[process-pointcloud] Python cwd:', runtimeConfig.backendScanToBimDir);
+  console.log('[process-pointcloud] Checkpoint path:', checkpointPath);
   const result = await runPython(vizInstScriptPath, vizInstArgs, {
+    cwd: runtimeConfig.backendScanToBimDir,
     env: {
       DISABLE_OPEN3D_VISUALIZER: '1',
     },
   });
-  console.log('[process-pointcloud] vizainst.py duration (ms):', Date.now() - runStart);
+  console.log('[process-pointcloud] local pipeline duration (ms):', Date.now() - runStart);
   if (result.stdout) {
-    console.log('[process-pointcloud] vizainst.py stdout:\n' + result.stdout);
+    console.log('[process-pointcloud] local pipeline stdout:\n' + result.stdout);
   }
   if (result.stderr) {
-    console.warn('[process-pointcloud] vizainst.py stderr:\n' + result.stderr);
+    console.warn('[process-pointcloud] local pipeline stderr:\n' + result.stderr);
   }
 
   const runDirMatch = result.stdout?.match(/Run output directory:\s*(.+)/i);
@@ -368,7 +467,7 @@ const runLocalPipeline = async ({ inputPath, startTime }) => {
   }
 
   if (!instancedPath) {
-    throw new Error('Missing all_instances_combined.ply after vizainst.py processing');
+    throw new Error('Missing all_instances_combined.ply after local pipeline processing');
   }
 
   console.log('[process-pointcloud] Instanced output:', instancedPath);
@@ -391,7 +490,6 @@ const runLocalPipeline = async ({ inputPath, startTime }) => {
         bimJsonPath,
         '--output_ifc',
         bimIfcPath,
-        '--no-view-ifc',
       ];
       const ifcResult = await runPython(json2IfcScriptPath, json2IfcArgs, { cwd: cloud2BimDir });
       if (ifcResult.stdout) {
@@ -443,7 +541,7 @@ const runLocalPipeline = async ({ inputPath, startTime }) => {
 
   return {
     success: true,
-    message: 'Point cloud processed successfully via vizainst.py pipeline',
+    message: 'Point cloud processed successfully via local Python pipeline',
     outputUrl: instancedUrl,
     semanticUrl: instancedUrl,
     instancedUrl,
@@ -465,7 +563,15 @@ app.use(cors());
 app.use('/outputs', express.static(outputsDir));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'Backend server is running', port: PORT });
+  const runtimeConfig = getRuntimeConfig();
+  res.json({
+    status: 'Backend server is running',
+    port: PORT,
+    pythonScriptPath: runtimeConfig.pythonScriptPath,
+    pythonCheckpointPath: runtimeConfig.pythonCheckpointPath,
+    backendScanToBimDir: runtimeConfig.backendScanToBimDir,
+    backendCloud2BimDir: runtimeConfig.backendCloud2BimDir,
+  });
 });
 
 app.get('/api/modal-status', async (_req, res) => {
@@ -545,9 +651,48 @@ app.post('/api/process-pointcloud', upload.single('file'), async (req, res) => {
   }
 });
 
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+    res.status(413).json({
+      success: false,
+      error: `File exceeds the ${MAX_UPLOAD_SIZE_LABEL} upload limit.`,
+    });
+    return;
+  }
+
+  next(error);
+});
+
+const validateStartupPaths = async () => {
+  const runtimeConfig = getRuntimeConfig();
+  const checks = [
+    { label: 'ScanToBIM directory', path: runtimeConfig.backendScanToBimDir },
+    { label: 'Cloud2BIM directory', path: runtimeConfig.backendCloud2BimDir },
+    { label: 'Python script', path: runtimeConfig.pythonScriptPath },
+    { label: 'Checkpoint', path: runtimeConfig.pythonCheckpointPath },
+    { label: 'json2ifc script', path: runtimeConfig.json2IfcScriptPath },
+    { label: 'IFC exporter script', path: runtimeConfig.ifcObjExporterScriptPath },
+  ];
+
+  let hasMissingPath = false;
+
+  for (const check of checks) {
+    const exists = await pathExists(check.path);
+    console.log(`[startup] ${exists ? 'OK' : 'MISSING'}: ${check.label}: ${check.path}`);
+    if (!exists) {
+      hasMissingPath = true;
+    }
+  }
+
+  if (hasMissingPath) {
+    throw new Error('Required backend files are missing. Fix the startup paths above before processing uploads.');
+  }
+};
+
 const startServer = async () => {
   await fs.mkdir(uploadsDir, { recursive: true });
   await fs.mkdir(outputsDir, { recursive: true });
+  await validateStartupPaths();
 
   if (modalBaseUrl) {
     try {

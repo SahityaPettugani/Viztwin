@@ -31,6 +31,8 @@ const emptyFormData: ProjectFormData = {
   country: '',
   buildingType: '',
 };
+const MAX_UPLOAD_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_SIZE_LABEL = '2 GB';
 
 const normalizeProcessResultUrls = (processResult: ProcessPointCloudResult): ProcessPointCloudResult => ({
   ...processResult,
@@ -56,10 +58,10 @@ export default function App() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState('');
   const [formData, setFormData] = useState<ProjectFormData>(emptyFormData);
   const [processingStage, setProcessingStage] = useState<'uploading' | 'processing' | 'complete'>('uploading');
-  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const uploadAbortController = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -133,6 +135,11 @@ export default function App() {
   };
 
   const handleFileSelect = (file: File) => {
+    if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+      alert(`Error: File exceeds the ${MAX_UPLOAD_SIZE_LABEL} upload limit.`);
+      return;
+    }
+
     setUploadedFile(file);
     setUploadedFileName(file.name);
   };
@@ -149,6 +156,11 @@ export default function App() {
 
     if (!uploadedFile) {
       alert('Error: No file selected. Please select a .ply file.');
+      return;
+    }
+
+    if (uploadedFile.size > MAX_UPLOAD_SIZE_BYTES) {
+      alert(`Error: File exceeds the ${MAX_UPLOAD_SIZE_LABEL} upload limit.`);
       return;
     }
 
@@ -340,15 +352,21 @@ export default function App() {
         </div>
       ) : null}
 
+      {deletingProjectId && currentPage === 'library' ? (
+        <div className="fixed bottom-6 right-6 z-[80] rounded-full bg-[#000001] px-5 py-3 font-['Satoshi_Variable:Medium',sans-serif] text-sm text-white shadow-lg">
+          Deleting project...
+        </div>
+      ) : null}
+
       {overlayState !== 'none' && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50" onClick={handleCloseOverlay}>
           {overlayState === 'upload' && (
-            <div className="relative scale-50" style={{ width: '571px', height: '682px' }} onClick={(event) => event.stopPropagation()}>
+            <div className="relative scale-70" style={{ width: '571px', height: '682px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadPage onUploadClick={handleShowProperties} onFileSelect={handleFileSelect} />
             </div>
           )}
           {overlayState === 'properties' && (
-            <div className="relative scale-50" style={{ width: '955px', height: '680px' }} onClick={(event) => event.stopPropagation()}>
+            <div className="relative scale-70" style={{ width: '955px', height: '680px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayFilePropertiesPopUp
                 formData={formData}
                 onChange={setFormData}
@@ -364,12 +382,12 @@ export default function App() {
             </div>
           )}
           {overlayState === 'uploading' && (
-            <div className="relative scale-50" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
+            <div className="relative scale-70" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadingPage progress={uploadProgress} fileName={uploadedFileName} onCancel={handleCancelUpload} stage={processingStage} />
             </div>
           )}
           {overlayState === 'uploaded' && (
-            <div className="relative scale-50" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
+            <div className="relative scale-70" style={{ width: '469px', height: '800px' }} onClick={(event) => event.stopPropagation()}>
               <OverlayUploadedPage onClose={handleNavigateToLibrary} fileName={uploadedFileName} />
             </div>
           )}

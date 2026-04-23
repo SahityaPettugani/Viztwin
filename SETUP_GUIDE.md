@@ -1,328 +1,141 @@
-# VizTwin Point Cloud Processing - Complete Setup Guide
+# VizTwin Local And Deployment Setup
 
-This guide will help you set up the complete VizTwin system with Python BIMNet processing integration.
+This guide matches the current application wiring in this repository.
 
 ## Architecture Overview
 
+```text
+Frontend (React + Vite) -> Local Node/Express server -> BACKEND/scantobim/viz_2.py
+                                                    -> BACKEND/cloud2bim/json2ifc.py
+                                                    -> outputs/
 ```
-Frontend (React) → Deno Server → Python API (BIMNet) → Processed Point Clouds
-                          ↓
-                   Supabase Storage
+
+`python-api/app.py` is a separate FastAPI experiment and is not the path used by the frontend upload flow.
+
+## Local Development
+
+### Prerequisites
+
+- Node.js and npm
+- Python environment with the packages needed by `BACKEND/scantobim/viz_2.py`
+- A valid BIMNet checkpoint file
+- The backend folders:
+  - `BACKEND/scantobim`
+  - `BACKEND/cloud2bim`
+
+### Backend Paths
+
+The local Node server expects these files by default:
+
+- `BACKEND/scantobim/viz_2.py`
+- `BACKEND/scantobim/log/val_best_miou.pth`
+- `BACKEND/cloud2bim/json2ifc.py`
+- `ifc_obj_exporter.py`
+
+You can override any of them with environment variables in `.env`.
+
+### Recommended `.env`
+
+```env
+VITE_SUPABASE_URL=your_supabase_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+VITE_SUPABASE_STORAGE_BUCKET=project-assets
+
+PYTHON_EXEC=python
+SCANTOBIM_DIR=BACKEND\scantobim
+CLOUD2BIM_DIR=BACKEND\cloud2bim
+PYTHON_SCRIPT=BACKEND\scantobim\viz_2.py
+PYTHON_CHECKPOINT=BACKEND\scantobim\log\val_best_miou.pth
+PYTHON_JSON2IFC_SCRIPT=BACKEND\cloud2bim\json2ifc.py
+PYTHON_IFC_EXPORTER_SCRIPT=ifc_obj_exporter.py
+ENABLE_BIM_PREVIEW=1
 ```
 
-## Prerequisites
+### Start The App
 
-- Node.js and npm installed
-- Python 3.8+ installed
-- (Optional) NVIDIA GPU with CUDA for faster processing
-- Your BIMNet model files (`bimnet.py` and `val_best.pth`)
-
----
-
-## Part 1: Python API Setup
-
-### Step 1: Navigate to Python API Directory
+Run the backend and frontend together from the `Viztwin` folder:
 
 ```bash
-cd python-api
+npm run dev-all
 ```
 
-### Step 2: Install Python Dependencies
+That starts:
+
+- the Node server on `http://localhost:3001`
+- the Vite frontend on its usual local dev port
+
+### Verify The Local Server
+
+Check the health endpoint:
 
 ```bash
-pip install -r requirements.txt
+curl http://localhost:3001/api/health
 ```
 
-**Note:** If you don't have a GPU or want CPU-only installation:
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
-```
+You should see the backend status plus the resolved script and checkpoint paths.
 
-### Step 3: Set Up Model Files
+When you upload a point cloud from the UI, the flow is:
 
-Create the required directory structure:
+1. Frontend calls `/api/process-pointcloud`
+2. Vite proxies that request to `http://localhost:3001`
+3. `server.js` runs `viz_2.py`
+4. Optional BIM conversion runs through `json2ifc.py`
+5. Results are served back from `/outputs`
 
-```bash
-mkdir -p model
-mkdir -p checkpoints
-```
+### Upload And Output Behavior
 
-**Copy your BIMNet model files:**
+- Uploads are limited to `2 GB`
+- The browser upload UI accepts `.ply` files only
+- `viz_2.py` also validates the input file before loading it, including the size cap
+- The combined output file `all_instances_combined.ply` now assigns a different color to every instance globally, instead of restarting colors per class
+- Individual instance files are still written under class folders inside the request output directory
 
-1. **Place `bimnet.py`** in the `model/` directory
-   - This file should contain your `BIMNet` class definition
-   - Path should be: `python-api/model/bimnet.py`
+## Deployment Notes
 
-2. **Place `val_best.pth`** in the `checkpoints/` directory
-   - This is your trained model checkpoint
-   - Path should be: `python-api/checkpoints/val_best.pth`
+For deployment, the frontend dev proxy is not enough by itself.
 
-Your directory structure should look like:
-```
-python-api/
-├── app.py
-├── requirements.txt
-├── model/
-│   └── bimnet.py          ← Your model definition
-└── checkpoints/
-    └── val_best.pth       ← Your trained weights
-```
+### What Must Change
 
-### Step 4: Start the Python API
+- Deploy the Node server somewhere that can run Python
+- Keep `viz_2.py`, the checkpoint, and `cloud2bim` on that same machine or container
+- Set real environment variables on the host instead of relying on local defaults
+- Expose the Node server as your production API origin
+- Point the production frontend to that API origin
 
-```bash
-python app.py
-```
+### Good Deployment Shape
 
-The API will start on `http://localhost:8000`
+Use this split:
 
-**Verify it's running:**
-```bash
-curl http://localhost:8000/
-```
+- Static frontend deployment for the React app
+- Separate backend deployment for `server.js`
+- Python dependencies installed on the backend host
+- Persistent or mounted storage for `uploads/` and `outputs/`
 
-You should see:
-```json
-{
-  "status": "online",
-  "service": "VizTwin Processing API",
-  "device": "cuda",  // or "cpu"
-  "models_loaded": true,
-  "cuda_available": true  // or false
-}
-```
+### Important Production Considerations
 
----
-
-## Part 2: Frontend & Deno Server Setup
-
-### Step 1: Set Environment Variable
-
-The Deno server needs to know where your Python API is running.
-
-**For Development (localhost):**
-The default is already set to `http://localhost:8000`, so no action needed.
-
-**For Production (deployed Python API):**
-In your Supabase dashboard, add an environment variable:
-- Name: `PYTHON_API_URL`
-- Value: `https://your-python-api-domain.com`
-
-### Step 2: Verify Database Setup
-
-Make sure you've created the Supabase database table by running this SQL in your Supabase dashboard:
-
-```sql
-CREATE TABLE kv_store_1d0df597 (
-  key TEXT PRIMARY KEY,
-  value JSONB NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-### Step 3: Run the Application
-
-Your VizTwin application should now be ready! The system will:
-
-1. ✅ Upload point cloud files to Supabase Storage
-2. ✅ Send them to Python API for BIMNet processing
-3. ✅ Store processed results back in Supabase
-4. ✅ Display processed point clouds with semantic colors
-
----
-
-## Usage Flow
-
-### Uploading a Point Cloud
-
-1. Click **UPLOAD** button
-2. Select a `.ply` file
-3. Fill in project properties
-4. Click **UPLOAD** to start processing
-
-### Processing Stages
-
-You'll see three stages:
-- **UPLOADING...** - File is being uploaded to storage
-- **PROCESSING...** - BIMNet is classifying the point cloud
-- **FINALIZING...** - Saving results to database
-
-### Viewing Results
-
-- Processed point clouds are displayed in the Library page
-- Click on a project to view it in the 3D viewer
-- Each semantic class (ceiling, floor, wall, beam, column, window, door) is colored differently
-
----
-
-## Testing the Integration
-
-### Test Python API Directly
-
-```bash
-# Test with a sample point cloud
-curl -X POST -F "file=@your_sample.ply" \
-  http://localhost:8000/process-simple \
-  --output processed.ply
-```
-
-### Test via Deno Server
-
-Check if the Deno server can reach the Python API:
-
-```bash
-curl https://YOUR_PROJECT_ID.supabase.co/functions/v1/make-server-1d0df597/python-api-status
-```
-
-Expected response:
-```json
-{
-  "success": true,
-  "pythonApi": {
-    "status": "online",
-    "models_loaded": true
-  },
-  "url": "http://localhost:8000"
-}
-```
-
----
+- The Vite proxy in development only works locally
+- `outputs/` is local disk storage, so it will not survive ephemeral server instances unless you mount storage or move artifacts to object storage
+- Large point cloud processing can take time, memory, and possibly GPU access
+- If you deploy behind a reverse proxy, make sure file upload limits are set to at least `2 GB` and request timeouts are increased appropriately
 
 ## Troubleshooting
 
-### Python API Issues
+### Server Starts But Upload Fails
 
-**Problem: "Models not loaded"**
-- Ensure `val_best.pth` is in `checkpoints/` directory
-- Ensure `bimnet.py` is in `model/` directory
-- Check file permissions
+- Check the Node server logs first
+- Check whether the uploaded file exceeded the `2 GB` cap
+- Confirm the checkpoint file exists at the resolved path
+- Confirm the Python environment used by `PYTHON_EXEC` can import all required packages
+- Confirm `viz_2.py` can run from `BACKEND/scantobim`
 
-**Problem: "CUDA out of memory"**
-- Reduce `CUBE_EDGE` in `app.py` from 128 to 64
-- Use CPU mode instead: Edit `app.py` and set `DEVICE = "cpu"`
+### Health Endpoint Works But Processing Fails
 
-**Problem: "Module not found: open3d"**
-- Reinstall dependencies: `pip install -r requirements.txt`
+- Look for `Python stdout` and `Python stderr` in the Node logs
+- Check whether `all_instances_combined.ply` was created in `outputs/`
+- If colors in the combined instance output look repeated by class, make sure you are using the current `BACKEND/scantobim/viz_2.py`
+- If IFC generation fails, verify `json2ifc.py` and `ifc_obj_exporter.py`
 
-### Integration Issues
+### Frontend Cannot Reach Backend In Production
 
-**Problem: "Cannot connect to Python API"**
-- Verify Python API is running: `curl http://localhost:8000/`
-- Check firewall settings
-- If deployed, verify `PYTHON_API_URL` environment variable
-
-**Problem: "Processing failed"**
-- Check Python API logs for errors
-- Verify point cloud file is valid `.ply` format
-- Check if file size is reasonable (< 100MB recommended for first test)
-
-**Problem: "Processed file same as original"**
-- Check that Python API returned success
-- Verify BIMNet model loaded correctly
-- Check console logs in browser developer tools
-
----
-
-## Production Deployment
-
-### Deploy Python API
-
-**Option 1: AWS EC2 with GPU**
-1. Launch a p2 or g4 instance
-2. Install CUDA and dependencies
-3. Copy your model files
-4. Run with systemd or supervisor
-5. Set up nginx reverse proxy
-6. Update `PYTHON_API_URL` environment variable
-
-**Option 2: Google Cloud with GPU**
-1. Create a Compute Engine instance with GPU
-2. Follow similar steps as AWS
-
-**Option 3: Docker**
-```dockerfile
-FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY . .
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-Build and run:
-```bash
-docker build -t viztwin-api .
-docker run -p 8000:8000 --gpus all viztwin-api
-```
-
-### Update Environment Variables
-
-In Supabase dashboard:
-- Set `PYTHON_API_URL` to your deployed Python API URL
-- Restart your Supabase Edge Function if needed
-
----
-
-## API Endpoints Reference
-
-### Python API
-
-- `GET /` - Health check
-- `POST /process-simple` - Process point cloud (returns single .ply)
-- `POST /process` - Full processing with instances (returns .zip)
-
-### Deno Server
-
-- `GET /make-server-1d0df597/health` - Health check
-- `POST /make-server-1d0df597/upload-pointcloud` - Upload original file
-- `POST /make-server-1d0df597/process-pointcloud` - Process via Python API
-- `GET /make-server-1d0df597/python-api-status` - Check Python API connection
-- `POST /make-server-1d0df597/projects` - Save project metadata
-- `GET /make-server-1d0df597/projects` - Get all projects
-- `DELETE /make-server-1d0df597/projects/:id` - Delete project
-
----
-
-## Performance Optimization
-
-### For Large Point Clouds
-
-1. **Downsample before upload** (in your scanning software)
-2. **Reduce voxel resolution**: Edit `CUBE_EDGE` in Python API
-3. **Use GPU**: Much faster than CPU (10-100x speedup)
-4. **Batch processing**: Process multiple files overnight
-
-### For Production
-
-1. **Add caching**: Cache processed results
-2. **Queue system**: Use Celery or Redis Queue for async processing
-3. **Multiple workers**: Run multiple Python API instances
-4. **CDN**: Use CloudFlare or AWS CloudFront for file delivery
-
----
-
-## Support
-
-If you encounter issues:
-
-1. Check Python API logs: Look at terminal output
-2. Check browser console: Developer tools → Console tab
-3. Check Supabase logs: Supabase dashboard → Logs
-4. Verify all files are in correct locations
-5. Test each component separately before integration
-
----
-
-## Summary Checklist
-
-- [ ] Python dependencies installed
-- [ ] `bimnet.py` in `python-api/model/`
-- [ ] `val_best.pth` in `python-api/checkpoints/`
-- [ ] Python API running on port 8000
-- [ ] Database table created in Supabase
-- [ ] `PYTHON_API_URL` environment variable set (if deployed)
-- [ ] Can successfully upload and process a test file
-
-Once all items are checked, your VizTwin system is ready to process point clouds with BIMNet semantic segmentation! 🎉
+- The frontend must call the deployed backend URL, not `/api` unless both are served from the same origin
+- If you keep different origins, configure CORS on the Node server appropriately

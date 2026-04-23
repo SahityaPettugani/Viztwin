@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { memo, useState, useRef, useEffect, useCallback } from 'react';
+import { X, ZoomIn, ZoomOut, Maximize2, ChevronDown, ChevronRight } from 'lucide-react';
 import { StandardizedHeaderS } from '../../imports/SharedHeader';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
@@ -299,8 +299,10 @@ const toCategoryName = (type: string) => {
 const inferElementType = (value: string) => {
   const normalized = (value || '').toLowerCase();
   if (normalized.includes('wall')) return 'wall';
-  if (normalized.includes('floor') || normalized.includes('slab')) return 'floor';
-  if (normalized.includes('ceiling') || normalized.includes('covering')) return 'ceiling';
+  if (normalized.includes('floor')) return 'floor';
+  if (normalized.includes('ceiling')) return 'ceiling';
+  if (normalized.includes('ifcslab')) return 'floor';
+  if (normalized.includes('ifccovering')) return 'ceiling';
   if (normalized.includes('column')) return 'column';
   if (normalized.includes('beam')) return 'beam';
   if (normalized.includes('window')) return 'window';
@@ -443,7 +445,7 @@ const getRepresentativeColorFromPly = (url: string): Promise<[number, number, nu
     );
   });
 
-function ThreeScene({
+const ThreeScene = memo(function ThreeScene({
   filters,
   containerRef,
   pointCloudUrl,
@@ -465,6 +467,11 @@ function ThreeScene({
   onBimSelect?: (id: string | null) => void;
 }) {
   const sceneRef = useRef<THREE.Scene | null>(null);
+  const onBimSelectRef = useRef<typeof onBimSelect>(onBimSelect);
+
+  useEffect(() => {
+    onBimSelectRef.current = onBimSelect;
+  }, [onBimSelect]);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const targetRef = useRef(new THREE.Vector3(0, 0, 0));
   const orbitRadiusRef = useRef(12);
@@ -486,6 +493,20 @@ function ThreeScene({
     scene.background = new THREE.Color(0xfafafa);
 
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
+    const cameraTarget = new THREE.Vector3(0, 0, 0);
+    camera.position.set(6, 3, 10);
+    camera.lookAt(cameraTarget);
+    const spherical = new THREE.Spherical();
+    const updateSphericalFromCamera = () => {
+      const offset = camera.position.clone().sub(cameraTarget);
+      spherical.setFromVector3(offset);
+    };
+    const updateCameraFromSpherical = () => {
+      const offset = new THREE.Vector3().setFromSpherical(spherical);
+      camera.position.copy(cameraTarget).add(offset);
+      camera.lookAt(cameraTarget);
+    };
+    updateSphericalFromCamera();
     camera.up.set(0, 0, 1);
     cameraRef.current = camera;
 
@@ -564,6 +585,10 @@ function ThreeScene({
 
       const deltaX = e.clientX - previousMousePosition.x;
       const deltaY = e.clientY - previousMousePosition.y;
+      spherical.theta -= deltaX * 0.008;
+      spherical.phi -= deltaY * 0.008;
+      spherical.phi = THREE.MathUtils.clamp(spherical.phi, 0.15, Math.PI - 0.15);
+      updateCameraFromSpherical();
 
       azimuthRef.current -= deltaX * 0.008;
       elevationRef.current = Math.max(
@@ -582,6 +607,8 @@ function ThreeScene({
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 1.1 : 0.9;
+      spherical.radius = THREE.MathUtils.clamp(spherical.radius * factor, 1.5, 40);
+      updateCameraFromSpherical();
       orbitRadiusRef.current = Math.max(2, Math.min(100, orbitRadiusRef.current * factor));
       updateCameraPosition();
     };
@@ -613,6 +640,10 @@ function ThreeScene({
     const mouse = new THREE.Vector2();
     const normalizedGroup = new THREE.Group();
     const contentGroup = new THREE.Group();
+    // Backend outputs are Z-up; rotate once into Three.js' Y-up world before fitting the camera.
+    contentGroup.rotation.x = -Math.PI/2;
+    contentGroup.rotation.z = Math.PI;
+
     normalizedGroup.add(contentGroup);
     scene.add(normalizedGroup);
 
@@ -635,10 +666,25 @@ function ThreeScene({
       box.getCenter(center);
       box.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
-      contentGroup.position.set(-center.x, -center.y, -center.z);
-      const normalizedScale = 5 / maxDim;
-      normalizedGroup.scale.setScalar(normalizedScale);
-      contentSizeRef.current.copy(size).multiplyScalar(normalizedScale);
+      const scale = 5 / maxDim;
+      contentGroup.position.set(-center.x, -center.y, -box.min.z);
+      normalizedGroup.scale.setScalar(scale);
+      cameraTarget.set(0, 0, 0);
+
+      const scaledSize = size.clone().multiplyScalar(scale);
+      const frontSpan = Math.max(scaledSize.x, scaledSize.y, 1);
+      const depthSpan = Math.max(scaledSize.z, 1);
+      const fovRadians = THREE.MathUtils.degToRad(camera.fov);
+      const fitDistance = (frontSpan * 0.7) / Math.tan(fovRadians / 2);
+
+      camera.position.set(
+        scaledSize.x * 0.12,
+        Math.max(scaledSize.y * 0.55, 2.2),
+        Math.max(fitDistance, depthSpan * 1.9)
+      );
+      updateSphericalFromCamera();
+      camera.lookAt(cameraTarget);
+      contentSizeRef.current.copy(size).multiplyScalar(scale);
       orbitRadiusRef.current = Math.max(8, Math.max(contentSizeRef.current.x, contentSizeRef.current.y, contentSizeRef.current.z) * 2.4);
       applyCameraPreset(presetRef.current);
     };
@@ -675,6 +721,7 @@ function ThreeScene({
           });
 
           const points = new THREE.Points(geometry, material);
+          points.userData.viewerKind = 'point-cloud';
           points.renderOrder = 1;
           contentGroup.add(points);
           disposableGeometries.add(geometry);
@@ -702,9 +749,7 @@ function ThreeScene({
               const resolvedElementId = sourceName || `mesh_${obj.name || roomElements.length}`;
               mesh.userData.bimId = resolvedElementId;
               mesh.userData.bimClass = inferElementType(sourceName || mesh.name || mesh.parent?.name || '');
-              mesh.visible = !(elementVisibility && resolvedElementId in elementVisibility)
-                ? true
-                : !!elementVisibility[resolvedElementId];
+              mesh.visible = true;
               if (!mesh.material) {
                 mesh.material = new THREE.MeshStandardMaterial({ color: 0xbdbdbd });
               }
@@ -845,14 +890,15 @@ function ThreeScene({
     applyCameraPreset(presetRef.current);
 
     // Animation loop
+    let animationFrameId = 0;
     const animate = () => {
-      requestAnimationFrame(animate);
+      animationFrameId = requestAnimationFrame(animate);
       renderer.render(scene, camera);
     };
     animate();
 
     const handleClick = (e: MouseEvent) => {
-      if (viewMode !== 'bim' || !bimModelUrl || !onBimSelect) return;
+      if (viewMode !== 'bim' || !bimModelUrl || !onBimSelectRef.current) return;
       const rect = renderer.domElement.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -861,13 +907,13 @@ function ThreeScene({
       const intersects = raycaster.intersectObjects(scene.children, true);
       const hit = intersects.find((item) => (item.object as THREE.Mesh).isMesh);
       if (!hit) {
-        onBimSelect(null);
+        onBimSelectRef.current(null);
         return;
       }
 
       const obj = hit.object as THREE.Mesh;
       const id = obj.userData.bimId || obj.name || obj.parent?.name || null;
-      onBimSelect(id ? String(id) : null);
+      onBimSelectRef.current(id ? String(id) : null);
     };
     renderer.domElement.addEventListener('click', handleClick);
 
@@ -890,6 +936,7 @@ function ThreeScene({
       renderer.domElement.removeEventListener('mouseup', handleMouseUp);
       renderer.domElement.removeEventListener('wheel', handleWheel);
       renderer.domElement.removeEventListener('click', handleClick);
+      cancelAnimationFrame(animationFrameId);
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
@@ -906,7 +953,26 @@ function ThreeScene({
       });
       sceneRef.current = null;
     };
-  }, [filters, pointCloudUrl, bimModelUrl, viewMode, containerRef, onBimSelect, elementVisibility]);
+  }, [pointCloudUrl, bimModelUrl, viewMode, containerRef]);
+
+  useEffect(() => {
+    if (!sceneRef.current) {
+      return;
+    }
+
+    sceneRef.current.traverse((obj) => {
+      if (!(obj instanceof THREE.Points) || obj.userData?.viewerKind !== 'point-cloud') {
+        return;
+      }
+      const material = obj.material;
+      if (!(material instanceof THREE.PointsMaterial)) {
+        return;
+      }
+      material.opacity = viewMode === 'bim' ? 0.45 : 1;
+      material.transparent = viewMode === 'bim';
+      material.needsUpdate = true;
+    });
+  }, [viewMode]);
 
   useEffect(() => {
     if (!cameraRef.current) {
@@ -1001,7 +1067,7 @@ function ThreeScene({
   }, [bimModelUrl, elementVisibility]);
 
   return null;
-}
+});
 
 export default function ModelViewer({
   projectTitle,
@@ -1385,7 +1451,7 @@ export default function ModelViewer({
   };
 
   return (
-    <div className="fixed inset-0 bg-white z-50">
+    <div className="fixed inset-0 bg-white z-50 overflow-hidden">
       {/* Header */}
       <StandardizedHeaderS
         onNavigateHome={onNavigateHome}
@@ -1396,9 +1462,9 @@ export default function ModelViewer({
         onAuthButtonClick={onAuthButtonClick}
       />
 
-      <div className="flex h-screen pt-[8.8vw]">
+      <div className="flex h-screen pt-[8.8vw] overflow-hidden">
         {/* Left Sidebar - Filters */}
-        <div className="w-[18.75vw] bg-[#f5f5f5] border-r border-[#d7d7d7] overflow-y-auto">
+        <div className="w-[18.75vw] shrink-0 bg-[#f5f5f5] border-r border-[#d7d7d7] overflow-y-auto">
           <div className="p-[1.56vw]">
             <div className="mb-[1.56vw] rounded-[0.78vw] border border-[#d7d7d7] bg-white px-[0.94vw] py-[0.94vw]">
               <p className="font-['Satoshi_Variable:Bold',sans-serif] text-[0.78vw] uppercase tracking-[0.12em] text-[#666666]">
@@ -1465,7 +1531,7 @@ export default function ModelViewer({
         </div>
 
           {/* Center - 3D Canvas */}
-        <div className="flex-1 relative bg-[#fafafa]">
+        <div className="flex-1 min-w-0 relative bg-[#fafafa] overflow-hidden">
           <div className="absolute top-[1.04vw] left-[1.04vw] z-10">
             <h1 className="font-['Satoshi_Variable:Bold',sans-serif] text-[1.56vw] text-[#000001]">
               {projectTitle}
