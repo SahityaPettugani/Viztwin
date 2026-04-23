@@ -1,17 +1,13 @@
 from os import path
 import numpy as np
-import torch, yaml
+import torch
 from scipy.spatial.transform import Rotation as R
-from open3d._ml3d.datasets.base_dataset import BaseDataset
 from torch.utils.data import Dataset
 
 from model.randlanet import RandLANet
-#from open3d.ml.torch.models import PointTransformer
 
 class DICEADatasetOpen3D(Dataset):
     name = "HePIC"
-    #with open('/home/elena/Documents/deeplearningproject/Open3D-ML/ml3d/configs/pointtransformer_dicea.yml') as f:
-    #    cfg = yaml.safe_load(f)
     splits_path = "data/HePIC"
 
     def __init__(self,
@@ -76,10 +72,9 @@ class DICEADatasetOpen3D(Dataset):
         model = self.model(num_classes=len(self.idmap))
         data = self.getitem(item)
         data = {"point": data[0], "feat": data[0], "label": data[1]}
-        if not self.split == 'test':
+        if self.split != 'test':
             data = model.preprocess(data, self.get_attr(item))
             data = model.transform(data, self.get_attr(item))
-            # del data["search_tree"]
         else:
             model.inference_begin(data)
             data = model.inference_preprocess()
@@ -134,10 +129,7 @@ class DICEADatasetOpen3D(Dataset):
 
         # shift between [0,1]
         xyz = (xyz + 1.) / 2.
-        points, features, labels = xyz, xyz, lab
-
         return torch.from_numpy(xyz), torch.from_numpy(lab)
-        #return torch.from_numpy(xyz).transpose(0,1).unsqueeze(-1), torch.from_numpy(lab).unsqueeze(-1)
 
     def to_plottable(self, x):
         return x.transpose(0, 2)
@@ -151,11 +143,9 @@ class DICEADatasetOpen3D(Dataset):
 
     def is_tested(self, attr):
         pass
-        # checks whether attr['name'] is already tested.
 
     def save_test_result(self, results, attr):
         pass
-        # save results['predict_labels'] to file.
 
     def get_data(self, idx):
         data = self.getitem(idx)

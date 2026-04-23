@@ -82,6 +82,14 @@ When you upload a point cloud from the UI, the flow is:
 4. Optional BIM conversion runs through `json2ifc.py`
 5. Results are served back from `/outputs`
 
+### Upload And Output Behavior
+
+- Uploads are limited to `2 GB`
+- The browser upload UI accepts `.ply` files only
+- `viz_2.py` also validates the input file before loading it, including the size cap
+- The combined output file `all_instances_combined.ply` now assigns a different color to every instance globally, instead of restarting colors per class
+- Individual instance files are still written under class folders inside the request output directory
+
 ## Deployment Notes
 
 For deployment, the frontend dev proxy is not enough by itself.
@@ -108,13 +116,14 @@ Use this split:
 - The Vite proxy in development only works locally
 - `outputs/` is local disk storage, so it will not survive ephemeral server instances unless you mount storage or move artifacts to object storage
 - Large point cloud processing can take time, memory, and possibly GPU access
-- If you deploy behind a reverse proxy, make sure file upload limits and request timeouts are increased appropriately
+- If you deploy behind a reverse proxy, make sure file upload limits are set to at least `2 GB` and request timeouts are increased appropriately
 
 ## Troubleshooting
 
 ### Server Starts But Upload Fails
 
 - Check the Node server logs first
+- Check whether the uploaded file exceeded the `2 GB` cap
 - Confirm the checkpoint file exists at the resolved path
 - Confirm the Python environment used by `PYTHON_EXEC` can import all required packages
 - Confirm `viz_2.py` can run from `BACKEND/scantobim`
@@ -123,6 +132,7 @@ Use this split:
 
 - Look for `Python stdout` and `Python stderr` in the Node logs
 - Check whether `all_instances_combined.ply` was created in `outputs/`
+- If colors in the combined instance output look repeated by class, make sure you are using the current `BACKEND/scantobim/viz_2.py`
 - If IFC generation fails, verify `json2ifc.py` and `ifc_obj_exporter.py`
 
 ### Frontend Cannot Reach Backend In Production

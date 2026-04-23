@@ -8,7 +8,7 @@ class Metrics:
         self.num_classes = len(name_classes)
         
         self.device = device
-        self.log_colors = True
+        self.log_colors = log_colors
         
         self.confusion_matrix = torch.zeros(self.num_classes, self.num_classes, dtype=torch.long, device=device)
         
@@ -80,7 +80,6 @@ class Metrics:
         mpa, mpp, miou = self.nanmean(pa), self.nanmean(pp), self.nanmean(iou)
         spa, spp, siou = self.nanstd(pa), self.nanstd(pp), self.nanstd(iou)
         for i, n in enumerate(self.name_classes):
-            #if i+1 in self.mask:
             npa, npp, niou = pa[i], pp[i], iou[i]
             if self.log_colors:
                 cpa, cpp, ciou = self.get_color(npa, mpa, spa), self.get_color(npp, mpp, spp), self.get_color(niou, miou, siou)

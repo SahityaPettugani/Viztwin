@@ -60,6 +60,8 @@ When `MODAL_ENDPOINT_URL` is present, `/api/process-pointcloud` will:
 
 ## Notes
 
+- The local upload entrypoint still enforces the `2 GB` upload limit before the file is handed off to Modal.
 - If `MODAL_ENDPOINT_URL` is missing, the backend still runs the original local Python pipeline.
 - The first Modal request may be slower because of image build and cold start.
 - If your model requires GPU, set `MODAL_GPU` before `modal deploy`.
+- The downloaded `all_instances_combined.ply` output is expected to contain globally unique colors per instance.

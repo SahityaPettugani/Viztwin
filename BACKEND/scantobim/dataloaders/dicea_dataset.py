@@ -107,7 +107,6 @@ class DICEADataset(Dataset):
         xyz = (xyz+1.)/2.
 
         return torch.from_numpy(xyz), torch.from_numpy(lab)
-        #return torch.from_numpy(xyz).transpose(0,1).unsqueeze(-1), torch.from_numpy(lab).unsqueeze(-1)
 
     def to_plottable(self, x):
         return x.transpose(0,2)

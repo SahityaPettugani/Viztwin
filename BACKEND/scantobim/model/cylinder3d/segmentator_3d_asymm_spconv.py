@@ -3,7 +3,6 @@
 # @file: segmentator_3d_asymm_spconv.py
 
 import numpy as np
-#import spconv
 import spconv.pytorch.conv as spconv
 import torch
 from torch import nn
@@ -159,7 +158,6 @@ class ResBlock(nn.Module):
 class UpBlock(nn.Module):
     def __init__(self, in_filters, out_filters, kernel_size=(3, 3, 3), indice_key=None, up_key=None):
         super(UpBlock, self).__init__()
-        # self.drop_out = drop_out
         self.trans_dilao = conv3x3(in_filters, out_filters, indice_key=indice_key + "new_up")
         self.trans_act = nn.LeakyReLU()
         self.trans_bn = nn.BatchNorm1d(out_filters)
@@ -175,7 +173,6 @@ class UpBlock(nn.Module):
         self.conv3 = conv1x3(out_filters, out_filters, indice_key=indice_key)
         self.act3 = nn.LeakyReLU()
         self.bn3 = nn.BatchNorm1d(out_filters)
-        # self.dropout3 = nn.Dropout3d(p=dropout_rate)
 
         self.up_subm = spconv.SparseInverseConv3d(out_filters, out_filters, kernel_size=3, indice_key=up_key,
                                                   bias=False)
@@ -259,8 +256,6 @@ class Asymm_3d_spconv(nn.Module):
         self.strict = False
 
         sparse_shape = np.array(output_shape)
-        # sparse_shape[0] = 11
-        #print(sparse_shape)
         self.sparse_shape = sparse_shape
 
         self.downCntx = ResContextBlock(num_input_features, init_size, indice_key="pre")
@@ -282,10 +277,7 @@ class Asymm_3d_spconv(nn.Module):
                                         bias=True)
 
     def forward(self, voxel_features, coors, batch_size):
-        # x = x.contiguous()
         coors = coors.int()
-        # import pdb
-        # pdb.set_trace()
         ret = spconv.SparseConvTensor(voxel_features, coors, self.sparse_shape,
                                       batch_size)
         ret = self.downCntx(ret)

@@ -643,7 +643,6 @@ const ThreeScene = memo(function ThreeScene({
     // Backend outputs are Z-up; rotate once into Three.js' Y-up world before fitting the camera.
     contentGroup.rotation.x = -Math.PI/2;
     contentGroup.rotation.z = Math.PI;
-    // contentGroup.rotation.y = Math.PI;
 
     normalizedGroup.add(contentGroup);
     scene.add(normalizedGroup);

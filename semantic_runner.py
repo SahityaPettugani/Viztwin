@@ -12,20 +12,12 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 import torch
 
-sys.path.insert(0, r'C:\Users\iamsa\Downloads\scan2bim')
+PROJECT_DIR = Path(__file__).resolve().parent
+SCANTOBIM_DIR = PROJECT_DIR / "BACKEND" / "scantobim"
+if str(SCANTOBIM_DIR) not in sys.path:
+    sys.path.insert(0, str(SCANTOBIM_DIR))
 
 from model.bimnet import BIMNet
-
-ID_TO_NAME = {
-    0: "ceiling",
-    1: "floor",
-    2: "wall",
-    3: "beam",
-    4: "column",
-    5: "window",
-    6: "door",
-    7: "unassigned",
-}
 
 
 def load_point_cloud(file_path: Path) -> o3d.geometry.PointCloud:

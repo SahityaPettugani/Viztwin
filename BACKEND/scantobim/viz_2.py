@@ -1,9 +1,9 @@
 import numpy as np
 import open3d as o3d
-# import open3d.visualization.gui as gui
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import pyransac3d as pyrsc
+import colorsys
 from sklearn.neighbors import NearestNeighbors
 
 import torch
@@ -24,6 +24,9 @@ from pathlib import Path
 from matplotlib.colors import to_rgb
 import argparse
 
+MAX_INPUT_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_INPUT_FILE_SIZE_LABEL = "2 GB"
+SUPPORTED_INPUT_SUFFIXES = {".ply", ".pcd"}
 
 ID_TO_NAME = {
     0: "ceiling",
@@ -35,10 +38,43 @@ ID_TO_NAME = {
     6: "door",
 }
 
+def format_file_size(num_bytes):
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024.0 or unit == "TB":
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+
+def validate_input_file(file_path):
+    file_path = Path(file_path)
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"Input file not found: {file_path}")
+    if not file_path.is_file():
+        raise ValueError(f"Input path is not a file: {file_path}")
+
+    suffix = file_path.suffix.lower()
+    if suffix not in SUPPORTED_INPUT_SUFFIXES:
+        supported = ", ".join(sorted(SUPPORTED_INPUT_SUFFIXES))
+        raise ValueError(f"Unsupported file format: {file_path.suffix}. Expected one of: {supported}")
+
+    file_size = file_path.stat().st_size
+    print(f"Input file size: {format_file_size(file_size)}")
+    if file_size > MAX_INPUT_FILE_SIZE_BYTES:
+        raise ValueError(
+            f"Input file exceeds the {MAX_INPUT_FILE_SIZE_LABEL} limit "
+            f"({format_file_size(file_size)})."
+        )
+
+    return file_path
+
 def load_point_cloud(file_path):
+    file_path = validate_input_file(file_path)
     print(f"Loading point cloud from: {file_path}")
     
-    if file_path.suffix in ['.ply', '.pcd']:
+    if file_path.suffix.lower() in SUPPORTED_INPUT_SUFFIXES:
         pcd = o3d.io.read_point_cloud(str(file_path))
     else:
         raise ValueError(f"Unsupported file format: {file_path.suffix}")
@@ -434,52 +470,15 @@ def instantiate_with_dbscan(pcd, class_name, eps=0.1, min_points=100):
     return instances
 
 def is_valid_geometry(pcd, class_name):
-    """Helper to verify if a cluster actually looks like a column/beam."""
-    # Validation disabled for debugging: keep all clustered geometry.
-    # bbox = pcd.get_axis_aligned_bounding_box()
-    # extent = np.asarray(bbox.get_extent(), dtype=np.float32)
-    #
-    # if class_name == 'column':
-    #     width_x, width_y, height = extent
-    #     footprint_max = max(width_x, width_y)
-    #     footprint_min = min(width_x, width_y)
-    #     footprint_area = width_x * width_y
-    #     return (
-    #         height > 0.20 and
-    #         height > footprint_max * 1.2 and
-    #         footprint_min > 0.015 and
-    #         footprint_max < 0.8 and
-    #         footprint_area < 0.25
-    #     )
-    # if class_name == 'beam':
-    #     return max(extent[0], extent[1]) > extent[2]
+    """Geometry validation is currently disabled, so all clusters are kept."""
     return True
-
-def filter_small_instances(instances_dict, min_points_thresholds):
-    cleaned_dict = {}
-    print("\n--- CLEANING NOISE ---")
-    
-    for class_name, instances in instances_dict.items():
-        thresh = min_points_thresholds.get(class_name, 500)
-        
-        valid_instances = []
-        for i, pcd in enumerate(instances):
-            n_points = len(pcd.points)
-            if n_points >= thresh:
-                valid_instances.append(pcd)
-        
-        cleaned_dict[class_name] = valid_instances
-        removed = len(instances) - len(valid_instances)
-        if removed > 0:
-            print(f"  {class_name}: Removed {removed} small instances (<{thresh} pts)")
-            
-    return cleaned_dict
 
 def save_instances(instances_dict, output_dir):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    colored_instances_dict = colorize_instances_globally(instances_dict)
     
-    for class_name, instances in instances_dict.items():
+    for class_name, instances in colored_instances_dict.items():
         class_dir = output_path / class_name
         class_dir.mkdir(exist_ok=True)
         
@@ -498,7 +497,7 @@ def save_instances(instances_dict, output_dir):
     print(f"\nSummary saved to {output_path / 'instantiation_summary.json'}")
 
     combined_pc = o3d.geometry.PointCloud()
-    for class_name, instances in instances_dict.items():
+    for class_name, instances in colored_instances_dict.items():
         for instance in instances:
             combined_pc += instance
     
@@ -507,34 +506,58 @@ def save_instances(instances_dict, output_dir):
     print(f"Combined point cloud saved to {combined_filename}")
 
 def generate_distinct_colors(n_colors):
-    try:
-        cmap = plt.colormaps['tab20']
-    except (AttributeError, KeyError):
-        cmap = plt.cm.get_cmap('tab20')
-    
+    if n_colors <= 0:
+        return []
+
+    if n_colors <= 20:
+        try:
+            cmap = plt.colormaps['tab20']
+        except (AttributeError, KeyError):
+            cmap = plt.cm.get_cmap('tab20')
+
+        denominator = max(n_colors - 1, 1)
+        return [cmap(i / denominator)[:3] for i in range(n_colors)]
+
     colors = []
+    golden_ratio = 0.618033988749895
+    hue = 0.0
     for i in range(n_colors):
-        rgba = cmap(i / max(n_colors, 1))
-        colors.append(rgba[:3])
+        hue = (hue + golden_ratio) % 1.0
+        saturation = 0.65 + 0.1 * (i % 3) / 2.0
+        value = 0.9 - 0.08 * (i % 2)
+        colors.append(colorsys.hsv_to_rgb(hue, saturation, value))
     return colors
 
+def colorize_instances_globally(instances_dict):
+    total_instances = sum(len(instances) for instances in instances_dict.values())
+    palette = generate_distinct_colors(total_instances)
+
+    colored_instances = {}
+    color_index = 0
+    for class_name, instances in instances_dict.items():
+        class_instances = []
+        for instance in instances:
+            colored_pcd = o3d.geometry.PointCloud(instance)
+            if len(instance.points) > 0:
+                instance_color = np.tile(palette[color_index], (len(instance.points), 1))
+                colored_pcd.colors = o3d.utility.Vector3dVector(instance_color)
+            class_instances.append(colored_pcd)
+            color_index += 1
+        colored_instances[class_name] = class_instances
+
+    return colored_instances
+
 def visualize_instances(instances_dict, show_by_class=True):
+    colored_instances_dict = colorize_instances_globally(instances_dict)
+
     if show_by_class:
-        for class_name, instances in instances_dict.items():
+        for class_name, instances in colored_instances_dict.items():
             if len(instances) == 0:
                 continue
             
             print(f"\nVisualizing {class_name} instances ({len(instances)} instances)...")
-            instance_colors = generate_distinct_colors(len(instances))
-            colored_instances = []
-            for i, instance in enumerate(instances):
-                colored_pcd = o3d.geometry.PointCloud(instance)
-                instance_color = np.tile(instance_colors[i], (len(instance.points), 1))
-                colored_pcd.colors = o3d.utility.Vector3dVector(instance_color)
-                colored_instances.append(colored_pcd)
-            
             o3d.visualization.draw_geometries(
-                colored_instances,
+                instances,
                 window_name=f"{class_name} - {len(instances)} Instances",
                 width=1024,
                 height=768
@@ -542,15 +565,10 @@ def visualize_instances(instances_dict, show_by_class=True):
     else:
         print("\nVisualizing all instances from all classes...")
         all_colored_instances = []
-        for class_name, instances in instances_dict.items():
+        for class_name, instances in colored_instances_dict.items():
             if len(instances) == 0:
                 continue
-            instance_colors = generate_distinct_colors(len(instances))
-            for i, instance in enumerate(instances):
-                colored_pcd = o3d.geometry.PointCloud(instance)
-                instance_color = np.tile(instance_colors[i], (len(instance.points), 1))
-                colored_pcd.colors = o3d.utility.Vector3dVector(instance_color)
-                all_colored_instances.append(colored_pcd)
+            all_colored_instances.extend(instances)
         
         if all_colored_instances:
             o3d.visualization.draw_geometries(
@@ -763,34 +781,8 @@ def oriented_line_from_wall_points(pts_xy):
         'offset_median': float(np.median(rel @ normal)),
     }
 
-# def is_valid_planar_instance(pcd, class_name):
-#     valid, _ = explain_planar_instance(pcd, class_name)
-#     return valid
-
 def explain_planar_instance(pcd, class_name):
-    # Validation disabled for debugging: accept all planar instances.
-    # pts = np.asarray(pcd.points)
-    # if len(pts) < 100:
-    #     return False, "too_few_points"
-    #
-    # bbox = pcd.get_axis_aligned_bounding_box()
-    # extent = np.asarray(bbox.get_extent())
-    #
-    # if class_name == 'wall':
-    #     xy = pts[:, :2]
-    #     line = oriented_line_from_wall_points(xy)
-    #     z_min = np.percentile(pts[:, 2], 5)
-    #     z_max = np.percentile(pts[:, 2], 95)
-    #     height = float(z_max - z_min)
-    #     horizontal = float(line['length'])
-    #     thickness = float(line['thickness'])
-    #     if height < 0.18 or horizontal < 0.12:
-    #         return False, f"height={height:.2f}, length={horizontal:.2f}"
-    #     if thickness > 1.2:
-    #         return False, f"thickness={thickness:.2f}"
-    # elif class_name in ['floor', 'ceiling']:
-    #     if extent[2] > max(extent[0], extent[1]) * 1.5:
-    #         return False, f"extent_z={extent[2]:.2f}"
+    """Planar validation is currently disabled, so all planar instances are accepted."""
     return True, "ok"
 
 def merge_collinear_walls(wall_instances, dist_tolerance=0.2, angle_tolerance_deg=8.0, gap_tolerance=0.6):
@@ -1016,58 +1008,6 @@ def remove_non_structural_labels_from_geometry(pcd, separated_classes, scale_fac
     if removed > 0:
         print(f"  Removed {removed} raw points near door/window labels before wall recovery")
     return filtered
-
-# def build_scene_context(instances_dict):
-#     floor_z = None
-#     ceiling_z = None
-#     room_height = None
-#
-#     if instances_dict.get('floor'):
-#         floor_pts = np.asarray(instances_dict['floor'][0].points, dtype=np.float32)
-#         if len(floor_pts) > 0:
-#             floor_z = float(np.percentile(floor_pts[:, 2], 50))
-#
-#     if instances_dict.get('ceiling'):
-#         ceiling_pts = np.asarray(instances_dict['ceiling'][0].points, dtype=np.float32)
-#         if len(ceiling_pts) > 0:
-#             ceiling_z = float(np.percentile(ceiling_pts[:, 2], 50))
-#
-#     if floor_z is not None and ceiling_z is not None:
-#         room_height = max(ceiling_z - floor_z, 1e-6)
-#
-#     wall_lines = []
-#     for wall in instances_dict.get('wall', []):
-#         pts = np.asarray(wall.points, dtype=np.float32)
-#         if len(pts) < 50:
-#             continue
-#         wall_lines.append(oriented_line_from_wall_points(pts[:, :2]))
-#
-#     return {
-#         'floor_z': floor_z,
-#         'ceiling_z': ceiling_z,
-#         'room_height': room_height,
-#         'wall_lines': wall_lines,
-#     }
-#
-# def infer_scene_mode(context, scale_factor=1.0):
-#     room_height = context.get('room_height')
-#     wall_count = len(context.get('wall_lines', []))
-#     if scale_factor > 2.5:
-#         return 'synthetic_like'
-#     if room_height is not None and room_height < 1.8:
-#         return 'synthetic_like'
-#     if wall_count >= 6:
-#         return 'real_like'
-#     return 'real_like'
-#
-# def distance_to_wall_lines_xy(point_xy, wall_lines):
-#     if not wall_lines:
-#         return None
-#     dists = [abs(np.dot(point_xy - line['center'], line['normal'])) for line in wall_lines]
-#     return float(min(dists)) if dists else None
-#
-# def explain_contextual_instance(pcd, class_name, context):
-#     return True, "ok"
 
 def refine_instances_with_context(instances, class_name, instances_dict, scale_factor=1.0):
     # Contextual refinement is currently disabled, so return instances unchanged.
@@ -1756,20 +1696,6 @@ def main(
             
         all_instances[class_name] = instances
 
-    ceiling_points = len(instantiation_classes.get('ceiling', o3d.geometry.PointCloud()).points)
-    floor_points = len(instantiation_classes.get('floor', o3d.geometry.PointCloud()).points)
-    cleaning_thresholds = {
-        'ceiling': max(200, min(1200, int(ceiling_points * 0.03))) if ceiling_points > 0 else 200,
-        'floor': max(200, min(1200, int(floor_points * 0.03))) if floor_points > 0 else 200,
-        'wall': 600,
-        'beam': 30,
-        'column': 30,
-        'window': 10,
-        'door': 30,
-    }
-
-    # Validation disabled for debugging: skip final small-instance cleanup.
-    # all_instances = filter_small_instances(all_instances, cleaning_thresholds)
     output_instances = scale_instances_dict(all_instances, 1.0 / scale_factor) if abs(scale_factor - 1.0) > 1e-8 else all_instances
 
     print("\nStep 3: Extracting BIM Parameters and Saving...")
@@ -1789,7 +1715,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="BIMNet semantic segmentation + DBSCAN instance extraction"
     )
-    parser.add_argument("--input_file", help="Path to input point cloud (.ply/.pcd)")
+    parser.add_argument("--input_file", help="Path to input point cloud (.ply/.pcd, max 2 GB)")
     parser.add_argument("--output_dir", default="output_instances", help="Directory to save instance PLYs")
     parser.add_argument("--checkpoint", action="append", default=[], help="Path(s) to BIMNet checkpoint(s)")
     parser.add_argument("--cube_edge", type=int, default=96, help="Voxel grid edge length")

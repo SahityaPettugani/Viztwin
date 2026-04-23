@@ -76,11 +76,9 @@ export default function OverlayUploadPage({ onUploadClick, onFileSelect }: { onU
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Validate file extension
       const fileName = file.name.toLowerCase();
       if (!fileName.endsWith('.ply')) {
         alert('Error: Please upload a .ply file only.');
-        // Reset the input
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
@@ -94,8 +92,7 @@ export default function OverlayUploadPage({ onUploadClick, onFileSelect }: { onU
         }
         return;
       }
-      
-      // File is valid, pass it to parent
+
       onFileSelect?.(file);
       onUploadClick?.();
     }

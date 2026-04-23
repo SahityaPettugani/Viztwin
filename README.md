@@ -20,3 +20,17 @@
   - A `projects` table to reload prior uploads per user
 
   The local Node server is still responsible for point-cloud processing. After processing completes, the frontend uploads the resulting files to Supabase so they remain available after refresh or sign-in on another machine.
+
+  ## Current Processing Notes
+
+  The current live processing path uses:
+
+  - `BACKEND/scantobim/viz_2.py` for segmentation and instantiation
+  - `BACKEND/cloud2bim/json2ifc.py` for IFC conversion
+  - `server.js` as the upload and orchestration layer
+
+  Current behavior:
+
+  - Uploads are capped at `2 GB`
+  - The backend accepts `.ply` and `.pcd` inputs, but the UI currently only allows `.ply`
+  - `all_instances_combined.ply` now uses globally unique colors per instance, so `wall_instance_000` and `door_instance_000` will not reuse the same color

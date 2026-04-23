@@ -84,7 +84,6 @@ class Mobile3DNet(nn.Module):
         x = self.bn1(x)
         x = self.swish(x)
         x = self.out(x)
-        #print(x.shape)
         
         x = F.interpolate(x, scale_factor=4, mode='trilinear', align_corners=True)
 
@@ -143,4 +142,4 @@ class Block(nn.Module):
         
         x = self.relu(x)
         
-        return x      
+        return x

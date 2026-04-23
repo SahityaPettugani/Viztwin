@@ -120,58 +120,6 @@ class SemanticKITTIDataset(Dataset):
         lab = np.reshape(annotated_data.astype(np.uint8), newshape=(annotated_data.shape[0],))
         
         return torch.from_numpy(xyz).unsqueeze(0), torch.from_numpy(lab)
-        
-        """
-        if self.augment and np.random.random()<.5:
-            xyz += np.random.randn(*xyz.shape)
-
-        # center & rescale PC in [-1,1]
-        xyz -= xyz.mean(axis=0)
-        xyz /= np.abs(xyz).max()
-
-        if self.augment:
-            # random rotation
-            if np.random.random()<.5:
-                r = R.from_rotvec(np.pi*(np.random.random(3,)-.5)*np.array([0.1,0.1,1])).as_matrix()
-                xyz = np.einsum('jk,nj->nk',r,xyz)
-                xyz /= np.abs(xyz).max()
-
-            # random shift
-            if np.random.random()<.5:
-                xyz -= np.random.random((3,))*2-1.
-            else:
-                xyz += 1
-
-            # random rescale & crop
-            if np.random.random()<.5:
-                if np.random.random()<.5:
-                    xyz = np.round(xyz*(self.cube_edge//2)*np.random.random()).astype(int)
-                else:
-                    xyz = np.round(xyz*(self.cube_edge//2)/np.random.random()).astype(int)
-            else:
-                xyz = np.round(xyz*(self.cube_edge//2)).astype(int)
-
-            valid = np.logical_and(np.all(xyz>-1, axis=1), np.all(xyz<self.cube_edge, axis=1))
-        else:
-            xyz += 1
-            xyz = np.round(xyz*(self.cube_edge//2)).astype(int)
-            valid = np.logical_and(np.all(xyz>-1, axis=1), np.all(xyz<self.cube_edge, axis=1))
-
-        xyz = xyz[valid,:]
-        lab = lab[valid]
-
-        geom = np.zeros((self.cube_edge, self.cube_edge, self.cube_edge), dtype=np.float32)
-        geom[tuple(xyz.T)] = 1
-
-        labs = np.zeros((self.cube_edge, self.cube_edge, self.cube_edge), dtype=np.long)
-        labs[tuple(xyz.T)] = lab
-
-        return torch.from_numpy(geom).unsqueeze(0), torch.from_numpy(labs)
-        """
-
-
-#######################
-# for cylinder3d
 
 class voxel_dataset(Dataset):
     def __init__(self, in_dataset, grid_size, rotate_aug=False, flip_aug=False, ignore_label=-1, return_test=False,
@@ -278,7 +226,6 @@ def cart2polar(input_xyz):
 
 
 def polar2cat(input_xyz_polar):
-    # print(input_xyz_polar.shape)
     x = input_xyz_polar[0] * np.cos(input_xyz_polar[1])
     y = input_xyz_polar[0] * np.sin(input_xyz_polar[1])
     return np.stack((x, y, input_xyz_polar[2]), axis=0)

@@ -19,7 +19,10 @@ import torch
 
 torch.backends.cudnn.benchmark = True
 
-sys.path.insert(0, r'C:\Users\iamsa\Downloads\scan2bim')
+PROJECT_DIR = Path(__file__).resolve().parent
+SCANTOBIM_DIR = PROJECT_DIR / "BACKEND" / "scantobim"
+if str(SCANTOBIM_DIR) not in sys.path:
+    sys.path.insert(0, str(SCANTOBIM_DIR))
 
 from model.bimnet import BIMNet
 

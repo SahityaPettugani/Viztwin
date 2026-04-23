@@ -183,10 +183,3 @@ class MNDataset(Dataset):
                     geom[...,shift:] = 0
         
         return torch.from_numpy(geom.astype(np.float32)).unsqueeze(0), lab
-#python -c "from utils.MNdataset import MNDataset; d=MNDataset('K:/Uni/Datasets/ModelNet40','K:/Uni/Datasets/ModelNet40'); d[0]"
-#for i, face in enumerate(faces):
-#    vs = verts[face]
-#    self.cast_face(vs, geom, max_d=self.max_d)
-# idx = np.stack(np.where(geom>0)).T
-# ptc = pv.PolyData(idx)
-# ptc.plot()
